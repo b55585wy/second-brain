@@ -4,6 +4,54 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { appFor, ok, request, profile, knowledge, output, settings, fakeServer, jobDone } from './helpers.mjs';
 import { dateInZone } from '../../server/validation.mjs';
+import { Model } from '../../server/model.mjs';
+import { Transport } from '../../server/transport.mjs';
+
+function capturedModel(endpoint, reply = { choices: [{ message: { content: '{"ok":true}' } }] }) {
+  const calls = [];
+  const config = { enabled: true, endpoint, model: 'test-model', allowExternalProcessing: true };
+  const secrets = { get: () => 'synthetic-model-key', clean: value => value };
+  const transport = new Transport({ fetch: async (url, request) => {
+    calls.push({ url, headers: request.headers, body: JSON.parse(request.body) });
+    return new Response(typeof reply === 'string' ? reply : JSON.stringify(reply), { headers: { 'Content-Type': 'application/json' } });
+  } });
+  return { model: new Model({ raw: () => ({ model: config }) }, secrets, transport), calls };
+}
+
+for (const endpoint of ['https://api.deepseek.com', 'https://api.deepseek.com/v1']) {
+  test(`DeepSeek disables thinking and caps output tokens at ${endpoint}`, async () => {
+    const { model, calls } = capturedModel(endpoint);
+    assert.deepEqual(await model.generate('Return the requested JSON.', { goal: 'supplied goal' }), { ok: true });
+    assert.equal(calls.length, 1); assert.equal(calls[0].url, `${endpoint}/chat/completions`);
+    const { messages, ...parameters } = calls[0].body;
+    assert.deepEqual(parameters, { model: 'test-model', temperature: 0, response_format: { type: 'json_object' }, thinking: { type: 'disabled' }, max_tokens: 2048 });
+    assert.deepEqual(JSON.parse(messages[1].content), { goal: 'supplied goal' });
+    assert.equal(calls[0].headers.Authorization, 'Bearer synthetic-model-key');
+  });
+}
+
+// Raw model fixtures bypass the settings allowlist to test exact hostname matching.
+for (const endpoint of ['https://api.openai.com/v1', 'http://127.0.0.1:11434/v1', 'https://api.deepseek.com.evil.example', 'https://evil-api.deepseek.com']) {
+  test(`other hosts keep the compatible-model request unchanged at ${endpoint}`, async () => {
+    const { model, calls } = capturedModel(endpoint);
+    await model.generate('Return the requested JSON.', { goal: 'supplied goal' });
+    assert.equal(calls.length, 1);
+    const { messages, ...parameters } = calls[0].body;
+    assert.deepEqual(parameters, { model: 'test-model', temperature: 0, response_format: { type: 'json_object' } });
+    assert.deepEqual(JSON.parse(messages[1].content), { goal: 'supplied goal' });
+  });
+}
+
+for (const [label, reply, code] of [
+  ['invalid upstream JSON', '{', 'UPSTREAM_INVALID_RESPONSE'],
+  ['invalid model JSON', { choices: [{ message: { content: '{' } }] }, 'UPSTREAM_ERROR'],
+]) {
+  test(`DeepSeek ${label} fails after one request without retries`, async () => {
+    const { model, calls } = capturedModel('https://api.deepseek.com', reply);
+    await assert.rejects(model.generate('Return the requested JSON.', {}), error => error.code === code);
+    assert.equal(calls.length, 1);
+  });
+}
 
 async function generate(app, extra = {}) {
   const p = await ok(app, 'GET', '/learning-profile');

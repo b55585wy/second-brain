@@ -325,3 +325,40 @@ test('scope revocation at a successful checkpoint prevents the page-2 request an
   assert.deepEqual(calls.map(call => call.method), ['thread/list', 'thread/items/list']);
   assert.equal(app.store.all('source').length, 2); assert.equal(app.store.all('collector-cursor').length, 0);
 });
+
+test('metadata discovery browses disabled scopes without body RPCs or database changes', async t => {
+  const { app, log } = await rpcApp(t);
+  const records = app.store.db.prepare('SELECT * FROM records ORDER BY kind,id').all();
+  const operations = app.store.db.prepare('SELECT * FROM operations ORDER BY scope,operation_id').all();
+  const discovery = await ok(app, 'GET', '/codex/discovery');
+  assert.deepEqual(discovery.items.map(item => ({ id: item.id, title: item.title, allowed: item.allowed })), [
+    { id: 'thread-one', title: 'thread-one', allowed: false },
+    { id: 'thread-two', title: 'thread-two', allowed: false },
+    { id: 'thread-three', title: 'thread-three', allowed: false },
+  ]);
+  assert.deepEqual(await ok(app, 'GET', '/codex/threads'), { items: [], total: 0 });
+  assert.deepEqual(app.store.db.prepare('SELECT * FROM records ORDER BY kind,id').all(), records);
+  assert.deepEqual(app.store.db.prepare('SELECT * FROM operations ORDER BY scope,operation_id').all(), operations);
+  const entries = log();
+  assert.deepEqual(entries.filter(item => item.method).map(item => item.method), ['initialize', 'initialized', 'thread/list', 'thread/list']);
+  assert.ok(entries.filter(item => item.method === 'thread/list').every(item => item.params.useStateDbOnly === true));
+  assert.deepEqual(entries.filter(item => item.startupArgs).map(item => item.startupArgs), [['app-server', '-c', 'mcp_servers={}', '--listen', 'stdio://']]);
+});
+
+test('browsing titles grants no sync permission and explicit selection reads only its authorized thread', async t => {
+  const { app, log } = await rpcApp(t);
+  await ok(app, 'GET', '/codex/discovery');
+  assert.equal((await request(app, 'POST', '/codex/sync', {})).error.code, 'SCOPE_FORBIDDEN');
+  await scope(app, { enabled: true, allowedThreadIds: ['thread-one'] });
+  const discovery = await ok(app, 'GET', '/codex/discovery');
+  assert.deepEqual(discovery.items.map(item => [item.id, item.allowed]), [['thread-one', true], ['thread-two', false], ['thread-three', false]]);
+  const beforeDenied = log();
+  assert.equal((await request(app, 'POST', '/codex/sync', { threadIds: ['thread-two'] })).error.code, 'SCOPE_FORBIDDEN');
+  assert.deepEqual(log(), beforeDenied);
+  assert.ok(beforeDenied.every(item => !['thread/items/list', 'thread/turns/list', 'thread/read'].includes(item.method)));
+  const result = await jobDone(app, await ok(app, 'POST', '/codex/sync', { threadIds: ['thread-one'] }, 202));
+  assert.equal(result.result.sourcesCreated, 2);
+  const bodyReads = log().filter(item => ['thread/items/list', 'thread/turns/list', 'thread/read'].includes(item.method));
+  assert.ok(bodyReads.length > 0); assert.ok(bodyReads.every(item => item.params.threadId === 'thread-one'));
+  assert.deepEqual([...new Set(app.store.all('source').map(item => item.threadId))], ['thread-one']);
+});

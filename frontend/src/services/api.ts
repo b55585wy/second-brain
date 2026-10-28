@@ -209,6 +209,7 @@ export const api = {
   syncKnowledge: async (id: string, revision?: number) => normalizeJob(await post<unknown>(`/knowledge/${id}/sync`, versioned(`/knowledge/${id}`, {}, revision))),
   importSource: async (body: { kind: 'siyuan_document' | 'siyuan_block' | 'feishu_document'; documentId?: string; blockId?: string; url?: string; projectId: string | null; extractCandidates?: boolean }) => normalizeJob(await post<unknown>('/sources/import', body)),
   codexThreads: () => get<ListData<CodexThread>>('/codex/threads'),
+  discoverCodexThreads: () => get<ListData<CodexThread>>('/codex/discovery?days=7&limit=20'),
   codexScope: () => get<CodexScope>('/connections/codex/scope'),
   saveCodexScope: (body: CodexScopeInput, revision?: number) => put<CodexScope>('/connections/codex/scope', versioned('/connections/codex/scope', body, revision)),
   syncCodex: async (threadIds?: string[]) => normalizeJob(await post<unknown>('/codex/sync', { ...(threadIds?.length ? { threadIds } : {}) })),

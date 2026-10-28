@@ -424,7 +424,7 @@ type CodexThread = {
   title: string;
   projectPath: string | null;
   archived: boolean;
-  allowed: true;
+  allowed: boolean; // 已授权列表始终为 true；发现列表按当前有效授权计算
   createdAt: Instant;
   updatedAt: Instant;
   lastSyncedAt: Instant | null;
@@ -448,11 +448,16 @@ type ManualDialogueImport = Mutation & {
 | --- | --- | --- |
 | `GET /connections/codex/scope` | 无 | 200 `Success<CodexScope>` |
 | `PUT /connections/codex/scope` | `Update & CodexScopeFields`（七个范围字段全量提供） | 200 `Success<CodexScope>`；记录修订 |
+| `GET /codex/discovery` | `days?:integer`（1..30，默认 7）、`limit?:integer`（1..50，默认 20） | 200 `Success<Page<CodexThread>>`；显式浏览近期元数据，`total` 为本次有界返回数量 |
 | `GET /codex/threads` | 分页 + `q?`（title）+ `projectPath?:string` | 200 `Success<Page<CodexThread>>`；仅列授权范围的元数据 |
 | `POST /codex/sync` | `Mutation & {threadIds?:ExternalId[],projectId?:Id|null,maxThreads?:number,maxMessages?:number}` | 202 `Success<JobAck>`，kind=codex_sync |
 | `POST /codex/manual-import` | `ManualDialogueImport` | 202 `Success<JobAck>`，kind=manual_dialogue_import；明确的可选后备 |
 
 初始 enabled=false、所有集合为空、includeArchived=false、allowManualImports=true。enabled=false 或正向范围均为空时 GET threads 返回空列表，不启动读取；显式 sync 为 403 SCOPE_FORBIDDEN。已启用但本机不可用为 503 CONNECTION_UNAVAILABLE，缺只读接口为 503 CAPABILITY_UNSUPPORTED；不调用 resume 作为读取手段。
+
+`GET /codex/discovery` 是独立的显式浏览入口，在页面点击「查看近期对话」后调用，不随页面挂载自动执行。它允许尚未启用或正向范围为空的用户浏览近期标题或短预览、项目路径与时间，便于选择对话；不读取完整正文、不保存来源/知识/游标/连接检查、不修改采集范围。返回复用 `CodexThread`，`allowed` 按当前有效授权计算，未授权项为 false；不返回独立 preview 字段或消息正文。标题沿用脱敏和 200 字符上限。负向排除、归档设置及范围修订仍有效，修订变化后中止该次浏览。
+
+发现请求只使用已核验 `useStateDbOnly=true` 的 `thread/list` 与必要初始化，所有列表尝试共享最多 5 页预算；不回退到正文、resume 或扫描会话文件。参数必须为边界内整数，未知参数拒绝。返回列表有界，不代表完整历史数量。发现列表中的 ID 本身不构成采集授权：前端需经明确「保存所选对话」调用原 `PUT /connections/codex/scope`，再显式同步。旧 `GET /codex/threads` 和同步接口的授权限制保持不变。
 
 allowlist 为“匹配 thread ID **或**匹配 allowedProjectPaths 边界内的项目”，然后应用 thread/path 排除及 archived 规则。路径要求绝对本地路径，规范化分隔符、Windows 大小写及真实路径边界，解析失败为 422；不递归扫描目录文件。projectPath query 只能收窄已授权范围，不能扩大。指定 threadIds 含任意不授权项则整个请求 403，不先处理一部分。projectId 是本产品的关联，不是 Codex 项目授权依据。撤销范围后停止后续读取/排队任务，不抹除已有审计及审核知识。
 

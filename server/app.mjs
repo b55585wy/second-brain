@@ -203,6 +203,14 @@ export function createApp(options = {}) {
   route('GET', '/connections/codex/scope', () => collector.publicScope());
   route('PUT', '/connections/codex/scope', ({ body }) => collector.setScope(input(body, ['enabled', 'allowedThreadIds', 'allowedProjectPaths', 'excludedThreadIds', 'excludedProjectPaths', 'includeArchived', 'allowManualImports'], store.require('config', 'codex-scope'))));
   route('GET', '/codex/threads', async ({ query }) => filter(await collector.threads(), query, ['title']), { query: [...PAGE, 'q', 'projectPath'] });
+  route('GET', '/codex/discovery', async ({ query }) => {
+    const options = Object.fromEntries([...query].map(([key, value]) => {
+      requireValue(/^\d+$/.test(value), '标题浏览参数必须为整数。');
+      return [key, Number(value)];
+    }));
+    const items = await collector.discovery(options);
+    return { items, total: items.length };
+  }, { query: ['days', 'limit'] });
   route('POST', '/codex/sync', ({ body }) => {
     const request = input(body, ['threadIds', 'projectId', 'maxThreads', 'maxMessages']);
     const scope = collector.scope();

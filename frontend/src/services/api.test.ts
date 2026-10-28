@@ -82,4 +82,11 @@ describe('API transport 与公共 DTO', () => {
     expect(body.model).not.toHaveProperty('apiKeyConfigured');
     expect(body.feishu).not.toHaveProperty('appSecretConfigured');
   });
+
+  it('按固定七天二十条参数发现 Codex 元数据并解包真实响应', async () => {
+    const data = { items: [{ id: 'thread-1', title: '近期讨论', projectPath: 'D:/project', updatedAt: '2026-10-27T10:00:00Z', allowed: false }], total: 1 };
+    const fetchMock = mockFetch({ data, requestId: 'request-1' });
+    await expect(api.discoverCodexThreads()).resolves.toEqual(data);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/codex/discovery?days=7&limit=20', expect.objectContaining({ method: 'GET', body: undefined }));
+  });
 });

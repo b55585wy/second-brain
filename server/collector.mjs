@@ -172,10 +172,10 @@ export class Collector {
     return result;
   }
 
-  publicThread(thread) {
+  publicThread(thread, allowed = true) {
     return this.secrets.clean({ id: String(thread.id), title: truncate(String(thread.name ?? thread.title ?? thread.preview ?? '未命名对话'), 200),
       updatedAt: iso(thread.updatedAt) ?? now(), createdAt: iso(thread.createdAt),
-      projectPath: thread.cwd ?? null, archived: !!thread.archived, allowed: true,
+      projectPath: thread.cwd ?? null, archived: !!thread.archived, allowed,
       lastSyncedAt: this.store.get('collector-thread', thread.id)?.lastSyncedAt ?? null,
       parentThreadId: thread.parentThreadId ?? thread.forkedFromId ?? null, ancestryVerified: false });
   }
@@ -184,6 +184,94 @@ export class Collector {
     // IDs and canonical paths are authorization inputs, not display strings.
     return { id: String(thread.id), title: truncate(this.secrets.redact(thread.name ?? thread.title ?? thread.preview ?? '未命名对话'), 200),
       cwd: typeof thread.cwd === 'string' ? thread.cwd : null, updatedAt: iso(thread.updatedAt), archived: !!thread.archived };
+  }
+
+  assertDiscoveryRevision(scope) {
+    if (this.scope().revision !== scope.revision) fail(403, 'SCOPE_FORBIDDEN', '采集范围已变化，请重新浏览标题。');
+  }
+
+  assertDiscovery(scope, client) {
+    this.assertDiscoveryRevision(scope);
+    if (client.verifiedStateDbOnly !== true || client.negotiated?.readOnly === false) fail(503, 'CAPABILITY_UNSUPPORTED', 'Codex 尚未提供已验证的安全标题列表能力。');
+  }
+
+  async metadataPage(client, cursor, scope, budget) {
+    const params = { cursor, limit: scope.pageSize, sortKey: 'updated_at', sortDirection: 'desc', useStateDbOnly: true,
+      excludedThreadIds: scope.excludedThreadIds.slice(0, 100), archived: !!scope._archived };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      this.assertDiscovery(scope, client);
+      budget.remaining--;
+      try {
+        const page = await client.request('thread/list', params);
+        this.assertDiscovery(scope, client);
+        return page;
+      } catch (error) {
+        this.assertDiscovery(scope, client);
+        if (attempt || !budget.remaining || !error.retryable || error instanceof RpcError) throw error;
+      }
+    }
+  }
+
+  discoverable(thread, scope) {
+    if (scope.excludedThreadIds.includes(thread.id) || !scope.includeArchived && thread.archived) return false;
+    let path = null;
+    try { if (thread.cwd) path = projectPath(thread.cwd); } catch {}
+    if (scope.excludedProjectPaths.length && !path) return false;
+    return !path || !scope.excludedProjectPaths.some(parent => inside(parent, path));
+  }
+
+  discoveryThread(thread, scope) {
+    const display = [thread.name, thread.title, thread.preview].find(value => typeof value === 'string' && value.trim()) ?? '未命名对话';
+    const parent = thread.parentThreadId ?? thread.forkedFromId;
+    return this.publicThread({ id: thread.id, name: truncate(this.secrets.redact(display), 200),
+      cwd: typeof thread.cwd === 'string' ? truncate(thread.cwd, 2000) : null,
+      createdAt: iso(thread.createdAt), updatedAt: iso(thread.updatedAt), archived: thread.archived,
+      parentThreadId: typeof parent === 'string' ? truncate(parent, 512) : null }, !!this.authorized(thread, scope));
+  }
+
+  async discovery(options = {}) {
+    onlyFields(options, ['days', 'limit']);
+    const days = integer(options.days ?? 7, 'days', 1, 30);
+    const limit = integer(options.limit ?? 20, 'limit', 1, 50);
+    const scope = { ...this.scope(), pageSize: limit };
+    const cutoff = Date.now() - days * 86400000;
+    const budget = { remaining: 5 };
+    const client = this.rpcFactory(scope);
+    this.clients.add(client);
+    try {
+      await client.start();
+      this.assertDiscovery(scope, client);
+      const result = []; const ids = new Set(); const cursors = new Set();
+      let cursor = null; let archived = false;
+      while (budget.remaining && result.length < limit) {
+        cursors.add(JSON.stringify([archived, cursor]));
+        const page = await this.metadataPage(client, cursor, { ...scope, _archived: archived }, budget);
+        const entries = pageItems(page);
+        if (entries.length > limit) fail(502, 'UPSTREAM_ERROR', 'Codex 标题分页超过请求上限。');
+        let cutoffReached = false;
+        for (const entry of entries) {
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry) || typeof entry.id !== 'string' || !entry.id.trim() || [...entry.id].length > 512 || /[\x00-\x1f\x7f]/.test(entry.id)) fail(502, 'UPSTREAM_ERROR', 'Codex 标题身份无效。');
+          const updatedAt = iso(entry.updatedAt);
+          if (updatedAt && +new Date(updatedAt) < cutoff) { cutoffReached = true; continue; }
+          const thread = { ...entry, archived: archived || !!entry.archived };
+          if (!updatedAt || ids.has(thread.id) || !this.discoverable(thread, scope)) continue;
+          ids.add(thread.id); result.push(this.discoveryThread(thread, scope));
+          if (result.length === limit) break;
+        }
+        const nextCursor = page.nextCursor ?? null;
+        if (nextCursor !== null && (typeof nextCursor !== 'string' || !nextCursor.trim() || nextCursor.length > 4096 || cursors.has(JSON.stringify([archived, nextCursor])))) fail(502, 'UPSTREAM_ERROR', 'Codex 标题分页游标无效或循环。');
+        if (nextCursor === null || cutoffReached) {
+          if (scope.includeArchived && !archived) { archived = true; cursor = null; continue; }
+          break;
+        }
+        cursor = nextCursor;
+      }
+      this.assertDiscovery(scope, client);
+      return result;
+    } catch (error) {
+      if (error instanceof RpcError) fail(503, 'CAPABILITY_UNSUPPORTED', 'Codex 不支持安全标题浏览；未读取对话正文。');
+      throw error;
+    } finally { try { await client.close(); } finally { this.clients.delete(client); this.assertDiscoveryRevision(scope); } }
   }
 
   async threads() {

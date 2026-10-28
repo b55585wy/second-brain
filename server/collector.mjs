@@ -34,6 +34,25 @@ function pageItems(page) {
   return items;
 }
 
+function historyCursor(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string' || !value.trim() || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value)) fail(502, 'UPSTREAM_ERROR', 'Codex 对话分页游标无效。');
+  return value;
+}
+
+function advanceCursorCheck(check, cursor) {
+  const hash = digest(cursor);
+  if (hash === check.anchorDigest) fail(502, 'UPSTREAM_ERROR', 'Codex 对话分页游标出现循环。');
+  const steps = check.steps + 1;
+  // Doubling the comparison window detects resumed cycles with constant checkpoint size.
+  return steps === check.span ? { anchorDigest: hash, span: Math.min(check.span * 2, Number.MAX_SAFE_INTEGER), steps: 0 } : { ...check, steps };
+}
+
+function messageIdentity(threadId, messageId) {
+  const combined = `${threadId}:${messageId}`;
+  return [...combined].length > 512 ? `event_${digest([threadId, messageId])}` : combined;
+}
+
 export function visibleMessage(entry, index) {
   const item = entry.item ?? entry;
   let role;
@@ -298,51 +317,66 @@ export class Collector {
     }, scope);
   }
 
-  async messages(client, threadId, scope) {
-    try {
-      const entries = [];
-      let cursor = null;
-      for (let count = 0; count < scope.maxPages; count++) {
-        const page = await this.read(client, 'thread/items/list', { threadId, cursor, limit: scope.pageSize, sortDirection: 'asc' }, scope);
-        entries.push(...pageItems(page));
-        if (!page.nextCursor) return entries.map(visibleMessage).filter(Boolean);
-        if (page.nextCursor === cursor) fail(502, 'UPSTREAM_ERROR', 'Codex 重复返回同一游标。');
-        cursor = page.nextCursor;
+  async messageChunk(client, threadId, scope, mode, startCursor, savedCheck, startEntryOffset = 0) {
+    if (mode === 'legacy' && startCursor !== null) fail(503, 'CAPABILITY_UNSUPPORTED', '旧版对话协议无法使用分页续传游标。');
+    const messages = []; const seen = new Set([startCursor]);
+    let cursor = startCursor; let index = startEntryOffset;
+    let cursorCheck = savedCheck ?? { anchorDigest: digest(startCursor), span: 1, steps: 0 };
+    for (let count = 0; count < (mode === 'legacy' ? 1 : scope.maxPages); count++) {
+      const method = { items: 'thread/items/list', turns: 'thread/turns/list', legacy: 'thread/read' }[mode];
+      const params = mode === 'legacy' ? { threadId, includeTurns: true }
+        : { threadId, cursor, limit: scope.pageSize, sortDirection: 'asc', ...(mode === 'turns' ? { itemsView: 'full' } : {}) };
+      let page;
+      try { page = await this.read(client, method, params, scope); }
+      catch (error) {
+        this.assertScope(scope);
+        if (count && unsupported(error)) fail(503, 'CAPABILITY_UNSUPPORTED', 'Codex 续传协议不可用，已保留上次检查点。');
+        throw error;
       }
-      fail(413, 'PAYLOAD_TOO_LARGE', '该线程超过分页上限，请调整范围或手工导入。');
-    } catch (error) {
-      if (!unsupported(error)) throw error;
-    }
-    try {
-      const turns = [];
-      let cursor = null;
-      for (let count = 0; count < scope.maxPages; count++) {
-        const page = await this.read(client, 'thread/turns/list', { threadId, cursor, limit: scope.pageSize, sortDirection: 'asc', itemsView: 'full' }, scope);
-        if (pageItems(page).some(turn => turn.itemsView === 'notLoaded' || turn.itemsView === 'summary')) fail(503, 'CAPABILITY_UNSUPPORTED', 'Codex 未提供完整可见消息。');
-        turns.push(...pageItems(page));
-        if (!page.nextCursor) return turns.flatMap(turn => turn.items ?? []).map(visibleMessage).filter(Boolean);
-        if (page.nextCursor === cursor) fail(502, 'UPSTREAM_ERROR', 'Codex 重复返回同一游标。');
-        cursor = page.nextCursor;
+      let entries = mode === 'legacy' ? page?.thread?.turns ?? page?.turns : pageItems(page);
+      if (mode !== 'items') {
+        if (!Array.isArray(entries) || entries.some(turn => !turn || ['notLoaded', 'summary'].includes(turn.itemsView) || !Array.isArray(turn.items ?? []))) fail(503, 'CAPABILITY_UNSUPPORTED', 'Codex 未提供完整可见对话，可使用手工导入。');
+        entries = entries.flatMap(turn => turn.items ?? []);
       }
-      fail(413, 'PAYLOAD_TOO_LARGE', '该线程超过分页上限。');
-    } catch (error) {
-      if (!unsupported(error)) throw error;
+      for (const entry of entries) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) fail(502, 'UPSTREAM_ERROR', 'Codex 对话分页条目无效。');
+        const message = visibleMessage(entry, index++);
+        if (message) messages.push(message);
+      }
+      const nextCursor = mode === 'legacy' ? null : historyCursor(page.nextCursor);
+      if (nextCursor === null) return { messages, nextCursor: null, mode, cursorCheck: null, entryOffset: index };
+      if (seen.has(nextCursor)) fail(502, 'UPSTREAM_ERROR', 'Codex 重复返回对话分页游标。');
+      seen.add(nextCursor); cursorCheck = advanceCursorCheck(cursorCheck, nextCursor); cursor = nextCursor;
     }
-    const legacy = await this.read(client, 'thread/read', { threadId, includeTurns: true }, scope);
-    const turns = legacy?.thread?.turns ?? legacy?.turns;
-    if (!Array.isArray(turns)) fail(503, 'CAPABILITY_UNSUPPORTED', 'Codex 未提供完整可见对话，可使用手工导入。');
-    return turns.flatMap(turn => turn.items ?? []).map(visibleMessage).filter(Boolean);
+    return { messages, nextCursor: cursor, mode, cursorCheck, entryOffset: index };
   }
 
-  ingest(thread, messages, projectId = null, origin = 'codex') {
+  async messages(client, threadId, scope, state = {}) {
+    const cursor = historyCursor(state.nativeCursor);
+    const entryOffset = integer(state.nativeEntryOffset ?? 0, 'nativeEntryOffset', 0, Number.MAX_SAFE_INTEGER);
+    if (state.nativeMode) {
+      if (!['items', 'turns', 'legacy'].includes(state.nativeMode)) fail(503, 'CAPABILITY_UNSUPPORTED', '保存的 Codex 续传协议无效。');
+      return this.messageChunk(client, threadId, scope, state.nativeMode, cursor, state.nativeCursorCheck, entryOffset);
+    }
+    if (cursor !== null) fail(503, 'CAPABILITY_UNSUPPORTED', 'Codex 续传游标缺少绑定协议。');
+    for (const mode of ['items', 'turns', 'legacy']) {
+      try { return await this.messageChunk(client, threadId, scope, mode, null, null, entryOffset); }
+      catch (error) { this.assertScope(scope); if (!unsupported(error)) throw error; }
+    }
+    fail(503, 'CAPABILITY_UNSUPPORTED', 'Codex 未提供完整可见对话，可使用手工导入。');
+  }
+
+  ingest(thread, messages, projectId = null, origin = 'codex', questionSourceId) {
     this.domain.project(projectId, true);
-    let questionSource = this.store.all('source').filter(item => item.kind === origin && item.threadId === thread.id && item.role === 'user').sort((a,b) => b.capturedAt.localeCompare(a.capturedAt))[0] ?? null;
+    let questionSource = questionSourceId === undefined
+      ? this.store.all('source').filter(item => item.kind === origin && item.threadId === thread.id && item.role === 'user').sort((a,b) => b.capturedAt.localeCompare(a.capturedAt))[0] ?? null
+      : questionSourceId === null ? null : this.store.get('source', questionSourceId);
+    if (questionSourceId !== undefined && questionSourceId !== null && (!questionSource || questionSource.kind !== origin || questionSource.threadId !== thread.id || questionSource.role !== 'user')) fail(409, 'INVALID_STATE', '续采的提问来源已失效，请重新选择采集范围。');
     let question = questionSource?.content ?? null;
     const results = { sources: 0, candidates: 0, updated: 0, knowledgeIds: [] };
     this.store.transaction(() => {
       for (const message of messages) {
-        const combinedIdentity = `${thread.id}:${message.id}`;
-        const identity = [...combinedIdentity].length > 512 ? `event_${digest([thread.id, message.id])}` : combinedIdentity;
+        const identity = messageIdentity(thread.id, message.id);
         const sourceId = `src_${digest([origin, identity]).slice(0, 48)}`;
         const previous = this.store.get('source', sourceId);
         const source = this.sources.capture({ kind: origin, origin: origin === 'codex' ? 'codex-app-server' : 'manual-import',
@@ -360,6 +394,7 @@ export class Collector {
         }
       }
     });
+    if (questionSourceId !== undefined) results.lastUserSourceId = questionSource?.id ?? null;
     return results;
   }
 
@@ -418,10 +453,11 @@ export class Collector {
           if (counts.threads >= maximumThreads || captured >= maximumMessages) { counts.truncated = true; return counts; }
           const thread = progress.pendingThreads[0];
           this.assertScope(scope, thread);
-          const messages = await this.messages(client, thread.id, scope);
-          this.assertScope(scope, thread);
           const stateKey = `${scopeKey}:${thread.id}`;
           const state = this.store.get('collector-thread', stateKey);
+          const chunk = await this.messages(client, thread.id, scope, state ?? {});
+          const messages = chunk.messages;
+          this.assertScope(scope, thread);
           let startOffset = state?.offset ?? 0;
           if (startOffset && state.lastMessageId) {
             const index = messages.findIndex(message => message.id === state.lastMessageId);
@@ -429,12 +465,20 @@ export class Collector {
             if (state.prefixDigest && digest(messages.slice(0, startOffset)) !== state.prefixDigest) startOffset = 0;
           }
           const batch = messages.slice(startOffset, startOffset + maximumMessages - captured);
+          const prefixUser = messages.slice(0, startOffset).findLast(message => message.role === 'user');
+          const userSourceId = prefixUser ? `src_${digest(['codex', messageIdentity(thread.id, prefixUser.id)]).slice(0, 48)}` : state?.nativeUserSourceId ?? null;
           let result;
-          const hasMore = startOffset + batch.length < messages.length;
+          const hasVisibleTail = startOffset + batch.length < messages.length;
+          const hasMore = hasVisibleTail || chunk.nextCursor !== null;
           this.store.transaction(() => {
             this.assertScope(scope, thread);
-            result = this.ingest(this.publicThread(thread), batch, request.projectId ?? null);
-            this.store.put('collector-thread', { offset: hasMore ? startOffset + batch.length : 0, lastSyncedAt: now(), scopeRevision: scope.revision,
+            result = this.ingest(this.publicThread(thread), batch, request.projectId ?? null, 'codex', userSourceId);
+            this.store.put('collector-thread', { offset: hasVisibleTail ? startOffset + batch.length : 0, lastSyncedAt: now(), scopeRevision: scope.revision,
+              nativeCursor: hasVisibleTail ? state?.nativeCursor ?? null : chunk.nextCursor,
+              nativeMode: hasMore ? chunk.mode : null, nativeCursorCheck: hasVisibleTail ? state?.nativeCursorCheck ?? null : chunk.cursorCheck,
+              // These values describe the chunk start, so quota rereads keep them unchanged.
+              nativeEntryOffset: hasVisibleTail ? state?.nativeEntryOffset ?? 0 : hasMore ? chunk.entryOffset : 0,
+              nativeUserSourceId: hasVisibleTail ? state?.nativeUserSourceId ?? null : hasMore ? result.lastUserSourceId : null,
               lastMessageId: batch.at(-1)?.id ?? null, digest: digest(batch), prefixDigest: digest(messages.slice(0, startOffset + batch.length)) }, stateKey);
             this.store.put('collector-thread', { lastSyncedAt: now() }, thread.id);
             if (!hasMore) progress = { ...progress, pendingThreads: progress.pendingThreads.slice(1) };

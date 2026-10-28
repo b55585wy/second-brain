@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CodexPage } from './CodexPage';
 import { api } from '../services/api';
-import type { CodexScope, CodexThread } from '../types';
+import type { CodexScope, CodexThread, Job } from '../types';
 
 vi.mock('../services/api', () => ({ api: {
   codexThreads: vi.fn(), discoverCodexThreads: vi.fn(), projects: vi.fn(), codexScope: vi.fn(), importManualDialogue: vi.fn(), syncCodex: vi.fn(), job: vi.fn(), saveCodexScope: vi.fn(),
@@ -257,6 +257,129 @@ describe('Codex 授权与同步', () => {
     expect(screen.getByText(/另有 1 条已选对话不在当前列表/)).toBeVisible();
     expect(api.saveCodexScope).not.toHaveBeenCalled();
     expect(api.syncCodex).not.toHaveBeenCalled();
+  });
+});
+
+describe('Codex 分批继续采集', () => {
+  const eligibleScope = { ...scope, enabled: true, allowedThreadIds: ['saved-thread'] };
+  const partialJob = (id = 'job-partial'): Job => ({ id, status: 'succeeded', type: 'codex_sync', result: { hasMore: true }, syncedCount: 2, skippedCount: 1 });
+
+  async function renderJob(nextJob: Job, saved: CodexScope = eligibleScope) {
+    const user = userEvent.setup();
+    setupPage(saved, [{ ...thread, id: 'saved-thread', allowed: true }]);
+    vi.mocked(api.syncCodex).mockResolvedValue(nextJob);
+    render(<CodexPage />);
+    const sync = await screen.findByRole('button', { name: '同步授权对话' });
+    await waitFor(() => expect(sync).toBeEnabled());
+    await user.click(sync);
+    expect(await screen.findByText(`任务 ${nextJob.id}`)).toBeVisible();
+    return user;
+  }
+
+  it('仅成功的 Codex 同步布尔 hasMore 显示精确分批状态和正常计数', async () => {
+    await renderJob(partialJob());
+    expect(screen.getByText('本批完成（还有更多）')).toBeVisible();
+    expect(screen.getByText('本批已保存，还有内容待采集，点击继续采集接着处理。')).toBeVisible();
+    expect(screen.getByRole('button', { name: '继续采集' })).toBeEnabled();
+    expect(screen.queryByText('任务完成')).not.toBeInTheDocument();
+    expect(screen.getByText('新建来源 2 · 更新来源 1')).toBeVisible();
+  });
+
+  it('每次显式继续都重新调用现有同步且只发送当前已保存 ID，最终完成移除继续', async () => {
+    const user = await renderJob(partialJob());
+    vi.mocked(api.syncCodex).mockResolvedValueOnce(partialJob('job-next')).mockResolvedValueOnce({ id: 'job-final', status: 'succeeded', type: 'codex_sync', result: { hasMore: false } });
+    await user.click(screen.getByRole('button', { name: '继续采集' }));
+    expect(await screen.findByText('任务 job-next')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '继续采集' }));
+    expect(await screen.findByText('任务 job-final')).toBeVisible();
+    expect(screen.getByText('任务完成')).toBeVisible();
+    expect(screen.queryByRole('button', { name: '继续采集' })).not.toBeInTheDocument();
+    expect(api.syncCodex).toHaveBeenCalledTimes(3);
+    expect(api.syncCodex).toHaveBeenNthCalledWith(2, ['saved-thread']);
+    expect(api.syncCodex).toHaveBeenNthCalledWith(3, ['saved-thread']);
+  });
+
+  it('请求 pending 防重复，排队轮询不自动继续，后续 false 显示正常完成', async () => {
+    const user = await renderJob(partialJob());
+    let resolveSync: ((value: Job) => void) | undefined;
+    vi.mocked(api.syncCodex).mockImplementationOnce(() => new Promise((resolve) => { resolveSync = resolve; }));
+    vi.mocked(api.job).mockResolvedValue({ id: 'job-next', status: 'succeeded', type: 'codex_sync', result: { hasMore: false } });
+    await user.click(screen.getByRole('button', { name: '继续采集' }));
+    const continuation = screen.getByRole('button', { name: '继续采集' });
+    expect(continuation).toBeDisabled();
+    await user.click(continuation);
+    expect(api.syncCodex).toHaveBeenCalledTimes(2);
+    resolveSync?.({ id: 'job-next', status: 'queued', type: 'codex_sync' });
+    expect(await screen.findByText('等待处理')).toBeVisible();
+    expect(screen.queryByRole('button', { name: '继续采集' })).not.toBeInTheDocument();
+    await waitFor(() => expect(api.job).toHaveBeenCalledWith('job-next'), { timeout: 2000 });
+    expect(await screen.findByText('任务完成')).toBeVisible();
+    expect(api.syncCodex).toHaveBeenCalledTimes(2);
+  });
+
+  it('未保存的线程和高级设置修改都禁用继续', async () => {
+    const user = await renderJob(partialJob());
+    const continuation = screen.getByRole('button', { name: '继续采集' });
+    const checkbox = screen.getByRole('checkbox', { name: /近期讨论/ });
+    await user.click(checkbox);
+    expect(continuation).toBeDisabled();
+    await user.click(checkbox);
+    expect(continuation).toBeEnabled();
+    await user.click(screen.getByText('高级设置'));
+    const archived = screen.getByRole('checkbox', { name: '包含已归档对话' });
+    await user.click(archived);
+    expect(continuation).toBeDisabled();
+    expect(api.syncCodex).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['已停用', { ...eligibleScope, enabled: false }],
+    ['无合格对象', { ...eligibleScope, excludedThreadIds: ['saved-thread'] }],
+  ])('已保存范围%s时保留同步禁用守卫', async (_label, saved) => {
+    setupPage(saved);
+    render(<CodexPage />);
+    const sync = await screen.findByRole('button', { name: '同步授权对话' });
+    await waitFor(() => expect(sync).toBeDisabled());
+    expect(api.syncCodex).not.toHaveBeenCalled();
+  });
+
+  it('范围读取错误保留同步禁用守卫', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.codexScope).mockRejectedValue(new Error('范围不可用'));
+    render(<CodexPage />);
+    await user.click(screen.getByText('高级设置'));
+    expect(await screen.findByText(/范围不可用/)).toBeVisible();
+    expect(screen.getByRole('button', { name: '同步授权对话' })).toBeDisabled();
+    expect(api.syncCodex).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['手动导入成功', { id: 'job-other', status: 'succeeded', type: 'manual_import', result: { hasMore: true } } as Job, '任务完成'],
+    ['同步失败', { id: 'job-other', status: 'failed', type: 'codex_sync', result: { hasMore: true }, error: '采集失败' } as Job, '任务失败'],
+    ['同步排队', { id: 'job-other', status: 'queued', type: 'codex_sync', result: { hasMore: true } } as Job, '等待处理'],
+    ['同步运行', { id: 'job-other', status: 'running', type: 'codex_sync', result: { hasMore: true } } as Job, '任务进行中'],
+    ['结果待确认', { id: 'job-other', status: 'uncertain', type: 'codex_sync', result: { hasMore: true } } as Job, '结果待确认'],
+    ['缺少 result', { id: 'job-other', status: 'succeeded', type: 'codex_sync' } as Job, '任务完成'],
+    ['hasMore 为 false', { id: 'job-other', status: 'succeeded', type: 'codex_sync', result: { hasMore: false } } as Job, '任务完成'],
+    ['hasMore 为字符串', { id: 'job-other', status: 'succeeded', type: 'codex_sync', result: { hasMore: 'true' } } as Job, '任务完成'],
+  ])('%s不显示分批继续且状态正确', async (_label, nextJob, caption) => {
+    await renderJob(nextJob);
+    expect(screen.getByText(caption)).toBeVisible();
+    expect(screen.queryByText('本批完成（还有更多）')).not.toBeInTheDocument();
+    expect(screen.queryByText('本批已保存，还有内容待采集，点击继续采集接着处理。')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '继续采集' })).not.toBeInTheDocument();
+  });
+
+  it('成功采用新保存修订时仅清除旧分批提示', async () => {
+    const user = await renderJob(partialJob());
+    vi.mocked(api.saveCodexScope).mockResolvedValue({ ...eligibleScope, includeArchived: true, revision: 2 });
+    await user.click(screen.getByText('高级设置'));
+    await user.click(screen.getByRole('checkbox', { name: '包含已归档对话' }));
+    await user.click(screen.getByRole('button', { name: '保存采集范围' }));
+    await waitFor(() => expect(api.saveCodexScope).toHaveBeenCalledWith(expect.objectContaining({ includeArchived: true }), 1));
+    await waitFor(() => expect(screen.queryByText('任务 job-partial')).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: '继续采集' })).not.toBeInTheDocument();
+    expect(api.syncCodex).toHaveBeenCalledTimes(1);
   });
 });
 

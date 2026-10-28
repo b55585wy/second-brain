@@ -1,25 +1,59 @@
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
-import { resolve, sep, dirname } from 'node:path';
+import { mkdtempSync, mkdirSync, rmSync, lstatSync, realpathSync } from 'node:fs';
+import { resolve, sep, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import assert from 'node:assert/strict';
 import { createApp } from '../../server/app.mjs';
 
-export const SCRATCH = resolve(dirname(fileURLToPath(import.meta.url)), '.scratch');
-mkdirSync(SCRATCH, { recursive: true });
-export const operation = () => randomUUID();
+const BACKEND = dirname(fileURLToPath(import.meta.url));
+assert.equal(relative(BACKEND, realpathSync(BACKEND)), '', 'Test source directory must not redirect elsewhere.');
+export const SCRATCH = resolve(BACKEND, '.scratch');
 
-export function scratch() { return mkdtempSync(resolve(SCRATCH, 'case-')); }
-export function removeScratch(path) {
-  const actual = resolve(path);
-  assert.ok(actual.startsWith(SCRATCH + sep));
-  rmSync(actual, { recursive: true, force: true, maxRetries: 1, retryDelay: 100 });
+function ensureScratch() {
+  try { mkdirSync(SCRATCH); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const info = lstatSync(SCRATCH);
+  assert.ok(info.isDirectory() && !info.isSymbolicLink(), 'Test scratch must be a physical directory.');
+  assert.equal(relative(SCRATCH, realpathSync(SCRATCH)), '', 'Test scratch must not redirect elsewhere.');
 }
 
-export async function appFor(t, options = {}) {
-  const root = options.root ?? scratch();
-  const app = createApp({ root, scheduler: false, ...options });
+function insideScratch(path, allowBase = false) {
+  const part = relative(SCRATCH, path);
+  return !part ? allowBase : part !== '..' && !part.startsWith('..' + sep) && !isAbsolute(part);
+}
+
+function isolatedPath(value, label, kind) {
+  assert.ok(typeof value === 'string' && value.trim() && isAbsolute(value), 'Test ' + label + ' must be a nonempty absolute path.');
+  const actual = resolve(value);
+  assert.ok(insideScratch(actual), 'Test ' + label + ' must stay strictly inside test scratch.');
+  ensureScratch();
+  for (let ancestor = actual; ; ancestor = dirname(ancestor)) {
+    try {
+      const info = lstatSync(ancestor);
+      assert.ok(!info.isSymbolicLink(), 'Test ' + label + ' must not use a symlink or junction ancestor.');
+      assert.ok(insideScratch(realpathSync(ancestor), true), 'Test ' + label + ' physical path escapes test scratch.');
+      if (!relative(actual, ancestor) && kind) assert.ok(kind === 'directory' ? info.isDirectory() : info.isFile(), 'Test ' + label + ' has an invalid file type.');
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (!relative(SCRATCH, ancestor)) return actual;
+  }
+}
+
+ensureScratch();
+export const operation = () => randomUUID();
+
+export function scratch() { ensureScratch(); return mkdtempSync(resolve(SCRATCH, 'case-')); }
+export function removeScratch(path, remove = rmSync) {
+  const actual = isolatedPath(path, 'cleanup root', 'directory');
+  remove(actual, { recursive: true, force: true, maxRetries: 1, retryDelay: 100 });
+}
+
+export async function appFor(t, options = {}, factory = createApp) {
+  assert.ok(options && typeof options === 'object' && !Array.isArray(options), 'Test options must be an object.');
+  const root = isolatedPath(options.root === undefined ? scratch() : options.root, 'root', 'directory');
+  const dataDir = isolatedPath(options.dataDir === undefined ? resolve(root, 'data') : options.dataDir, 'dataDir', 'directory');
+  const dbPath = isolatedPath(options.dbPath === undefined ? resolve(dataDir, 'second-brain.sqlite') : options.dbPath, 'dbPath', 'file');
+  const secretsPath = isolatedPath(options.secretsPath === undefined ? resolve(dataDir, 'secrets/credentials.json') : options.secretsPath, 'secretsPath', 'file');
+  const app = factory({ scheduler: false, ...options, dataDir, dbPath, secretsPath, root });
   await app.listen(0);
   t.after(async () => { await app.close(); if (!options.keep) removeScratch(root); });
   return app;

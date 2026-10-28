@@ -2,6 +2,8 @@
 
 All tests use isolated databases and fake upstreams. They must never write real SiYuan notes or collect real conversation history.
 
+The shared helper resolves every database and credential path before constructing an application. All paths must be strictly inside the physical `tests/backend/.scratch` directory; empty, relative, production and symlink/junction paths are rejected. Cleanup applies the same boundary checks. Validate changes to this boundary in a source-only disposable copy before running database tests.
+
 | Requirement | Scenarios | Test files |
 | --- | --- | --- |
 | Local HTTP safety | Loopback listener; success/error envelopes; wrong origin; bad Host; traversal; JSON content type, malformed/oversized bodies; bounded pagination; missing routes | http.test.mjs |
@@ -16,6 +18,8 @@ All tests use isolated databases and fake upstreams. They must never write real 
 | Codex read-only collection | No default all-history collection; explicit scopes/exclusions; initialized handshake; state-db-only listing; paginated modern turns/items; legacy includeTurns fallback; no mutating RPC; visible user/assistant only; keys/tool/reasoning excluded; independent-thread identity; incremental digest; page failure/restart cursor; bounded limits | collector.test.mjs |
 | Explicit recent conversation discovery | Disabled/empty positive scope may browse metadata only after an explicit request; negative exclusions/archive/revision checks; days/limit bounds and shared five-page budget; redacted metadata; no body RPC, saved sources, cursors or permission changes; unselected synchronization remains forbidden | collector-discovery.test.mjs |
 | CLI listing capability verification | Exact schema-verified 0.164.0/0.165.0 server versions; real user-agent format; unknown, suffix and client-only lookalikes rejected; explicit capability declaration preserved; initialization does not read history | collector-capability.test.mjs |
+| Bounded long-conversation continuation | Histories beyond twenty pages; visible quotas within a chunk; hidden-only pages; question context across chunks and full rescans; stable ID-less identities when pagination changes; SQLite restart/replay; partial prefix edits; protocol binding; transient failures; revoked scope; invalid/repeating/cyclic cursors; frozen thread queue; metadata-only checkpoints | collector-continuation.test.mjs |
+| Test filesystem isolation | Undefined overrides resolved before construction; empty/relative/outside/production paths rejected before constructor calls; valid custom paths; junction escapes; checked cleanup; intentional isolated database restart | test-isolation.test.mjs |
 | Manual transcript fallback | Exact schema; honest origin marker; source links; draft candidates; duplicate and changed message identity; malicious text stays inert; invalid/oversized inputs | collector.test.mjs |
 | Feishu opt-in | Disabled and missing-token states; official URL allowlist; authorized raw-content import; 401/403 permission; 429 retryable; no arbitrary URL scraping/chat ingestion | connectors.test.mjs |
 | Credentials and exports | Secrets absent in public settings/connections/errors/source excerpts/export; token kept in separate local secret file; unsafe provider URLs/redirects rejected; imported secrets ignored/rejected | persistence.test.mjs, http.test.mjs |
@@ -24,7 +28,7 @@ All tests use isolated databases and fake upstreams. They must never write real 
 
 Run: `node.exe --test tests/backend/*.test.mjs` from the repository root. Exact commands, outcomes, API additions, and integration limitations are recorded in `server/HANDOFF.md`.
 
-## Final verification
+## Initial implementation verification
 
 Node 24.22.0 / Windows: **163 passed, 0 failed, 0 skipped**, across 14 test files. The final root npm.cmd test also passed packaging16 and Kimi frontend33; see aggregate evidence（本机留存：`../../.tmp/final-delivery-checks-20261027/report.json`）.
 
@@ -45,3 +49,7 @@ Additional requirement cases cover relevance and goal/skill coverage, pinned nat
 The real Windows regression reproduced the prior defect: `/inheritance:r /grant:r` left explicit SYSTEM and non-owner logon read ACEs, and retained an explicitly granted Everyone read ACE. Credential paths now receive a replacement protected DACL with exactly the current user's FullControl rule, followed by a read-back check before credential bytes are written. Reopening a legacy file applies the same protection without changing its contents. Paths are passed to the fixed native PowerShell script through JSON stdin, never interpolated into command text.
 
 Targeted verification: `node.exe --test tests/backend/credentials-acl.test.mjs tests/backend/credentials.test.mjs tests/backend/collector-secrets.test.mjs`; all 22 synthetic cases pass on Windows, including failure after temporary-file creation. The earlier aggregate counts above remain the recorded pre-regression baseline; the root task records the final aggregate after this change.
+
+## Collector continuation verification, 2026-10-28
+
+The complete current suite passed **257/257**, with no skips, in a source-only disposable copy using `node --test --test-concurrency=1 tests/backend/*.test.mjs`. This includes 26 continuation scenarios and 7 filesystem-isolation scenarios. Frontend63, packaging35, typecheck/build, and 9 synthetic browser integration scenarios also passed. Production database and credential hashes remained unchanged throughout these checks. See [the bounded real collection result and verification limits](../../docs/COLLECTOR-CONTINUATION-VERIFICATION-20261028.md).

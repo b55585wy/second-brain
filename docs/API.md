@@ -463,6 +463,8 @@ allowlist 为“匹配 thread ID **或**匹配 allowedProjectPaths 边界内的�
 
 maxThreads 默认 20，范围 1..100；maxMessages 默认 500，范围 1..1000，为单作业总上限。超出本次额度不删除/跳过剩余数据，返回 hasMore=true；检查点只推进到已事务保存的事件，后续 sync 接续。未提供 threadIds 时选授权的有更新线程，按 updatedAt DESC,id ASC 有界处理。
 
+支持分页的正文读取也遵循分批续采：达到单批原生分页上限且仍有后续游标时，保留线程队列头并返回 `hasMore=true`，不因线程总长度而丢弃已完成批次。续采点与授权修订、线程和读取接口绑定，原生游标及批内消息偏移与来源写入同事务保存；仅在当前批内可见尾部与原生分页均结束后移出该线程。工具/推理消息可推进传输位置，但不保存为来源。检查点不缓存原始正文或工具日志，现有分页、消息数量和传输字节上限保持不变。前端仅在成功的 codex_sync 作业 `result.hasMore === true` 时显示续采提示与按钮。
+
 适配器必须记录 CLI/协议版本和能力，仅读取经本机 schema/handshake 核验的 `thread/list` 与 `thread/read`（及必要初始化握手）。thread/list 必须支持并使用 `useStateDbOnly=true`，避免其默认扫描/修复元数据；无法保证只读则 CAPABILITY_UNSUPPORTED。不得使用 start/resume/turn/fork/archive/执行类方法。只捕获 user 和 assistant 最终可见材料；排除 reasoning、系统/开发者文本、工具完整日志和凭据。未显式配置模型外发时只本地处理，不以采集授权推导上传授权。
 
 当前已按本机 CLI **0.164.0、0.165.0** 生成的 `ThreadListParams` 核验 `useStateDbOnly` 为布尔参数，其 true 语义为从状态数据库返回、跳过 JSONL 扫描与元数据修复。仅识别精确的已核验版本标记；未知版本仍须提供明确的能力声明，否则拒绝标题与正文读取。后续 CLI 升级需重新核验此契约。

@@ -28,6 +28,10 @@ function hasEligibleThreads(scope: CodexScope): boolean {
   return scope.enabled && (scope.allowedThreadIds.some((id) => !scope.excludedThreadIds.includes(id)) || scope.allowedProjectPaths.length > 0);
 }
 
+function isPartialSync(job: Job | null): boolean {
+  return job?.status === 'succeeded' && job.type === 'codex_sync' && job.result?.hasMore === true;
+}
+
 export function CodexPage() {
   const threadsResource = useApi(api.codexThreads);
   const projectsResource = useApi(api.projects);
@@ -49,6 +53,7 @@ export function CodexPage() {
   useEffect(() => {
     if (!scopeResource.data) return;
     const saved = { ...emptyScope, ...scopeResource.data };
+    if (saved.revision !== savedScope.revision && isPartialSync(job)) setJob(null);
     setSavedScope(saved);
     setScope(saved);
     setAllowedThreads(joinLines(saved.allowedThreadIds)); setExcludedThreads(joinLines(saved.excludedThreadIds));
@@ -89,6 +94,7 @@ export function CodexPage() {
         excludedProjectPaths: lines(excludedPaths),
       }, savedScope.revision);
       const adopted = { ...emptyScope, ...saved };
+      if (adopted.revision !== savedScope.revision && isPartialSync(job)) setJob(null);
       setSavedScope(adopted); setScope(adopted);
       setAllowedThreads(joinLines(adopted.allowedThreadIds)); setExcludedThreads(joinLines(adopted.excludedThreadIds));
       setAllowedPaths(joinLines(adopted.allowedProjectPaths)); setExcludedPaths(joinLines(adopted.excludedProjectPaths));
@@ -127,12 +133,13 @@ export function CodexPage() {
   const canSync = !!scopeResource.data && !scopeResource.error && !hasUnsavedChanges && hasEligibleThreads(savedScope);
   const syncDisabled = busy || !canSync || ['queued', 'running'].includes(job?.status || '');
   const saveDisabled = busy || !!scopeResource.error || !scopeResource.data;
+  const partialSync = isPartialSync(job);
   return <div className="mx-auto max-w-6xl">
     <PageHeader eyebrow="只读采集" title="Codex 对话" description="按标题选择并保存授权，再同步已保存的对话。自动发现不可用时仍可手动导入。采集器只读取授权来源，不执行对话中的任何指令。" actions={<Button onClick={sync} disabled={syncDisabled}><RefreshCw className="h-4 w-4" />同步授权对话</Button>} />
     {hasUnsavedChanges && <div className="mb-4"><Notice>有未保存的范围修改，请先保存后再同步。</Notice></div>}
     <div className="mb-6"><Notice><ShieldCheck className="mr-2 inline h-4 w-4" />查看列表和勾选不会自动采集；保存所选对话后，再点击“同步授权对话”读取正文。</Notice></div>
     {message && <div className="mb-4"><Notice tone="success">{message}</Notice></div>}{error && <div className="mb-4"><Notice tone="error">{error}<div className="mt-2"><Button variant="secondary" onClick={scopeResource.reload}>重新加载最新范围</Button></div></Notice></div>}
-    {job && <div className="panel mb-6 p-4" aria-live="polite"><div className="flex flex-wrap items-center gap-3"><Badge>{job.status === 'succeeded' ? '任务完成' : job.status === 'failed' ? '任务失败' : job.status === 'running' ? '任务进行中' : job.status === 'uncertain' ? '结果待确认' : '等待处理'}</Badge><span className="text-sm text-muted">任务 {job.id}</span></div>{job.error && <p className="mt-2 text-sm text-danger">{job.error}</p>}<p className="mt-2 text-sm">新建来源 {job.syncedCount ?? '—'} · 更新来源 {job.skippedCount ?? '—'}</p></div>}
+    {job && <div className="panel mb-6 p-4" aria-live="polite"><div className="flex flex-wrap items-center gap-3"><Badge>{partialSync ? '本批完成（还有更多）' : job.status === 'succeeded' ? '任务完成' : job.status === 'failed' ? '任务失败' : job.status === 'running' ? '任务进行中' : job.status === 'uncertain' ? '结果待确认' : '等待处理'}</Badge><span className="text-sm text-muted">任务 {job.id}</span></div>{partialSync && <><p className="mt-2 text-sm">本批已保存，还有内容待采集，点击继续采集接着处理。</p><Button className="mt-3" onClick={sync} disabled={syncDisabled}>继续采集</Button></>}{job.error && <p className="mt-2 text-sm text-danger">{job.error}</p>}<p className="mt-2 text-sm">新建来源 {job.syncedCount ?? '—'} · 更新来源 {job.skippedCount ?? '—'}</p></div>}
     <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_340px]">
       <div className="space-y-10"><Section title="选择授权对话" description="勾选只修改草稿；保存所选对话后，才能同步。排除规则始终优先。" action={<Button variant="secondary" onClick={discoverThreads} disabled={discovery.status === 'loading'}>{discovery.status === 'loading' ? '正在查看近期对话…' : discovery.status === 'initial' ? '查看近期对话' : '刷新近期对话'}</Button>}>
         <p className="mb-4 text-sm leading-6 text-muted">点击后查看最近 7 天最多 20 条对话的标题、项目和更新时间，不读取完整对话内容。元数据可能包含敏感信息。</p>

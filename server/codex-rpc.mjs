@@ -48,9 +48,12 @@ export class CodexRpc {
       result = await this.request('initialize', { clientInfo: { name: 'second_brain', title: 'Second Brain read-only collector', version: '0.0.0' } });
     }
     this.child.stdin.write(`${JSON.stringify({ method: 'initialized', params: {} })}\n`);
-    // Verified against the installed 0.164.0 generated schema. Unknown versions must explicitly advertise this capability.
+    // These exact releases have schema-verified non-repairing state-DB listing.
     const agent = result?.userAgent ?? result?.serverInfo?.version ?? '';
-    this.verifiedStateDbOnly = /\b0\.164\.0\b/.test(agent) || result?.capabilities?.useStateDbOnly === true;
+    // Later user-agent tokens may contain the client's version rather than the server's.
+    const version = typeof agent === 'string'
+      ? /^(?:[\w.-]+\/|codex-cli )?(\d+\.\d+\.\d+)(?= |$)/.exec(agent)?.[1] : null;
+    this.verifiedStateDbOnly = ['0.164.0', '0.165.0'].includes(version) || result?.capabilities?.useStateDbOnly === true;
     this.negotiated = { server: result, protocol: 'jsonrpc-stdio', readOnly: true };
     return this;
   }

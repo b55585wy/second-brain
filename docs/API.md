@@ -465,6 +465,8 @@ maxThreads 默认 20，范围 1..100；maxMessages 默认 500，范围 1..1000�
 
 适配器必须记录 CLI/协议版本和能力，仅读取经本机 schema/handshake 核验的 `thread/list` 与 `thread/read`（及必要初始化握手）。thread/list 必须支持并使用 `useStateDbOnly=true`，避免其默认扫描/修复元数据；无法保证只读则 CAPABILITY_UNSUPPORTED。不得使用 start/resume/turn/fork/archive/执行类方法。只捕获 user 和 assistant 最终可见材料；排除 reasoning、系统/开发者文本、工具完整日志和凭据。未显式配置模型外发时只本地处理，不以采集授权推导上传授权。
 
+当前已按本机 CLI **0.164.0、0.165.0** 生成的 `ThreadListParams` 核验 `useStateDbOnly` 为布尔参数，其 true 语义为从状态数据库返回、跳过 JSONL 扫描与元数据修复。仅识别精确的已核验版本标记；未知版本仍须提供明确的能力声明，否则拒绝标题与正文读取。后续 CLI 升级需重新核验此契约。
+
 去重键是来源身份，不是全文 hash：稳定 threadId+messageId 定位事件，SHA-256 摘要检测事件更新；同一线程两个相同文本的独立 messageId 均保留。fork 只有在可信祖先关系、有序源事件与前缀摘要均对应时，才建立 inherited alias；无祖先证据的独立同文线程保留，不能删除。部分列表、暂时不可见消息、授权撤销不触发历史删除。来源变化保留版本，关联 accepted 知识变 needs_recheck，不覆盖用户答案。
 
 手动后备仅在 allowManualImports=true 时可用，不要求 app-server 或外部模型。messages 为 1..500 条，每条非空 content 最多 20000 字符，总请求仍限 1 MiB；只允许两个 role，sourceMessageId 来源内唯一。使用 `(manual_dialogue, externalSourceId, sourceMessageId)` 幂等采集，修改内容建新版本；不从相同文本推断 fork。输入不得夹带完整日志/秘密；服务端仍按同一规则脱敏。origin/SourceKind 均是 manual_dialogue，UI 不能显示“自动采集成功”。

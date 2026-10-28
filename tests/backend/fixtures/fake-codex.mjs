@@ -24,7 +24,8 @@ createInterface({ input: process.stdin }).on('line', line => {
   const result = value => send({ id: request.id, result: value });
   const error = code => send({ id: request.id, error: { code, message: 'fake protocol capability' } });
   if (request.method === 'initialize') {
-    result({ userAgent: mode === 'unverified-version' ? 'codex-cli 0.100.0' : 'codex-cli 0.164.0', capabilities: {} });
+    result(process.env.SECOND_BRAIN_FAKE_INITIALIZE ? JSON.parse(process.env.SECOND_BRAIN_FAKE_INITIALIZE)
+      : { userAgent: mode === 'unverified-version' ? 'codex-cli 0.100.0' : 'codex-cli 0.164.0', capabilities: {} });
     return;
   }
   if (request.method === 'thread/list') {

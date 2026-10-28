@@ -1,0 +1,44 @@
+# Backend requirement scenarios
+
+All tests use isolated databases and fake upstreams. They must never write real SiYuan notes or collect real conversation history.
+
+| Requirement | Scenarios | Test files |
+| --- | --- | --- |
+| Local HTTP safety | Loopback listener; success/error envelopes; wrong origin; bad Host; traversal; JSON content type, malformed/oversized bodies; bounded pagination; missing routes | http.test.mjs |
+| Profile and project context | Defaults without invented career; timezone/budget bounds; create, list, search, edit, archive, soft delete; archived writes blocked; checkpoints persist | core.test.mjs |
+| Knowledge acceptance | All extraction drafts; source references and redaction; accept/reject transitions; operation replay/conflict; accepted content edits require recheck; upstream source changes require recheck; no original mutation | core.test.mjs, connectors.test.mjs |
+| Durable local state | SQLite restart; revisions; immutable attempts; user outputs; no-key manual workflow; export/import stable identity and revision conflicts | persistence.test.mjs |
+| Daily planning | Empty profile; accepted knowledge; goal template; budgets 0/1/15/max; total within budget; timezone dates; repeat generation; completed evidence survives goal edits | learning.test.mjs |
+| Competence feedback | Output and assistance evidence; missing/empty/invalid data; manual rubric with unknown correctness; optional model schema validation and prompt injection treated as source data | learning.test.mjs |
+| SiYuan connector | Unconfigured; token redaction; real POST/Token contract; HTTP-200 errors; version mismatch; timeout; notebook import; app-owned notebook/card sync; flush before generated SQL; source originals unchanged | connectors.test.mjs |
+| Riff scheduling | Pinned 3.8.8 rating mapping; real due-card fields; prompt hides answer until reveal; empty queue; wrong/out-of-order card; no rating before reveal; repeated operation; repeated card under new ID; timeout-after-commit uncertain and reconciled without regrading | review.test.mjs |
+| Codex read-only collection | No default all-history collection; explicit scopes/exclusions; initialized handshake; state-db-only listing; paginated modern turns/items; legacy includeTurns fallback; no mutating RPC; visible user/assistant only; keys/tool/reasoning excluded; independent-thread identity; incremental digest; page failure/restart cursor; bounded limits | collector.test.mjs |
+| Manual transcript fallback | Exact schema; honest origin marker; source links; draft candidates; duplicate and changed message identity; malicious text stays inert; invalid/oversized inputs | collector.test.mjs |
+| Feishu opt-in | Disabled and missing-token states; official URL allowlist; authorized raw-content import; 401/403 permission; 429 retryable; no arbitrary URL scraping/chat ingestion | connectors.test.mjs |
+| Credentials and exports | Secrets absent in public settings/connections/errors/source excerpts/export; token kept in separate local secret file; unsafe provider URLs/redirects rejected; imported secrets ignored/rejected | persistence.test.mjs, http.test.mjs |
+| Windows credential permissions | Actual default Windows ACLs; explicit Everyone/SYSTEM/non-owner logon ACEs removed on update and reopen; protected current-user-only DACL; literal Unicode/shell-sensitive paths; trusted native tools despite Git/poisoned PATH; owner/ACL/verification failures preserve previous disk and memory state and remove temporary files | credentials-acl.test.mjs, credentials.test.mjs, fixtures/credential-child.mjs |
+| Persistent jobs/scheduler | Sync persistent job success/failure; single lease; crash recovery; bounded catchup while running; no OS autostart registration | jobs.test.mjs |
+
+Run: `node.exe --test tests/backend/*.test.mjs` from the repository root. Exact commands, outcomes, API additions, and integration limitations are recorded in `server/HANDOFF.md`.
+
+## Final verification
+
+Node 24.22.0 / Windows: **163 passed, 0 failed, 0 skipped**, across 14 test files. The final root npm.cmd test also passed packaging16 and Kimi frontend33; see aggregate evidence（本机留存：`../../.tmp/final-delivery-checks-20261027/report.json`）.
+
+- `hardening.test.mjs` additionally verifies nested import rejection, source identity aliasing, restored feedback, imported profile revision mapping, model-response revision races, invalid model schemas, manual rubric validation and Unicode limits.
+- `http.test.mjs` includes actual static/SPA delivery plus junction/symlink escape protection.
+- `collector.test.mjs` covers modern item pagination, full turn pagination and legacy includeTurns through a spawned fake RPC process; unknown versions stop before listing. It also covers quotas/cursors across restart, explicit archived permission and queued-job cancellation after scope revocation.
+- `review.test.mjs` covers fresh sessions after changed knowledge and native card-state advancement before grading, as well as confirmed replay and timeout-after-commit uncertainty.
+- `connectors.test.mjs` includes uncertain notebook creation without a second create and persistence of an actual card ID when it is no longer due.
+- `jobs.test.mjs` includes confirmed native receipt recovery without repeating a remote operation.
+- `persistence.test.mjs` includes quoted credential/tokenFile/JWT redaction, real runtime manifest discovery and idempotent SQLite restart restoration.
+
+This backend suite uses synthetic upstreams. The separate real local SiYuan3.8.8 acceptance now passed under its permitted empty-token policy; real Feishu remains unverified. See docs/NATIVE-VERIFICATION-20261028.md. A separate real Codex0.164 collector check passed for ONE authorized bounded snapshot (12sources/7draft-unverifiedcandidates, full replay0new/0updated); see bounded verification（本机留存：`../../.tmp/projection-smoke-20261027-9b4e1f7c62/verification-report.json`）. It does not establish full-live history or continuous daily collection.
+
+Additional requirement cases cover relevance and goal/skill coverage, pinned native Windows credential tools, review recovery, connection identity/epoch isolation, late or uncertain writes, and collector scope/cursor/redaction boundaries; exact checks are in the current 13 test files and server/HANDOFF.md.
+
+## Windows credential ACL regression, 2026-10-28
+
+The real Windows regression reproduced the prior defect: `/inheritance:r /grant:r` left explicit SYSTEM and non-owner logon read ACEs, and retained an explicitly granted Everyone read ACE. Credential paths now receive a replacement protected DACL with exactly the current user's FullControl rule, followed by a read-back check before credential bytes are written. Reopening a legacy file applies the same protection without changing its contents. Paths are passed to the fixed native PowerShell script through JSON stdin, never interpolated into command text.
+
+Targeted verification: `node.exe --test tests/backend/credentials-acl.test.mjs tests/backend/credentials.test.mjs tests/backend/collector-secrets.test.mjs`; all 22 synthetic cases pass on Windows, including failure after temporary-file creation. The earlier aggregate counts above remain the recorded pre-regression baseline; the root task records the final aggregate after this change.

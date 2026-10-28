@@ -1,0 +1,31 @@
+import { test, expect } from '../support/fixtures.mjs';
+import { apiData, escapePattern, formWith, keyboardActivate, mutation, preparePractice, screenshot, section, synthetic, waitForJob } from '../support/ui.mjs';
+
+test('PRACTICE-01 / PRACTICE-02 / PRACTICE-03: real template workspace, draft recovery, submission and honest feedback', async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
+  const { practice, name } = await preparePractice(page);
+  const form = formWith(page, '你的输出');
+  const draft = synthetic('practice-user-draft');
+  await expect(form.getByRole('button', { name: '提交本次尝试', exact: true })).toBeDisabled();
+  await form.getByLabel('你的输出', { exact: true }).fill(draft);
+  await expect.poll(() => page.evaluate(value => Object.values(localStorage).includes(value), draft), { message: 'Wait for the actual browser draft write before reload.' }).toBeTruthy();
+  await page.reload();
+  await keyboardActivate(page, section(page, '选择练习').getByRole('button', { name: new RegExp(escapePattern(name)) }));
+  await expect(form.getByLabel('你的输出', { exact: true })).toHaveValue(draft);
+  await form.getByLabel('借助程度', { exact: true }).selectOption({ label: '独立完成' });
+  await form.getByLabel('新增 URL 证据（每行一条）', { exact: true }).fill('');
+  const saved = await mutation(page, 'POST', `/api/v1/practices/${practice.id}/attempts`, () => keyboardActivate(page, form.getByRole('button', { name: '提交本次尝试', exact: true })));
+  expect(saved.data.id, 'Real attempt must have a persisted ID.').toBeTruthy();
+  await expect(page.getByRole('status').filter({ hasText: '本次尝试已保存' })).toBeVisible();
+  const feedbackSection = section(page, '本次反馈');
+  const feedback = await mutation(page, 'POST', `/api/v1/attempts/${saved.data.id}/feedback`, () => keyboardActivate(page, feedbackSection.getByRole('button', { name: '获取模板反馈', exact: true })));
+  await waitForJob(page, feedback.data);
+  const attempts = await apiData(page, `/api/v1/practices/${practice.id}/attempts`);
+  const completed = attempts.items.find(item => item.id === saved.data.id)?.feedback;
+  const mode = completed?.mode || completed?.kind;
+  expect(['manual', 'template'], 'No enabled model means feedback must honestly identify its manual/template origin.').toContain(mode);
+  await expect(feedbackSection.getByText(/^(本地模板 · 未评估正确性|人工判断)$/)).toBeVisible();
+  await expect(feedbackSection.getByRole('heading', { name: '限制与未验证项', exact: true })).toBeVisible();
+  await expect(feedbackSection.getByText('模型建议 · 需要核验', { exact: true })).toHaveCount(0);
+  await screenshot(page, testInfo, 'synthetic-practice-template-feedback');
+});

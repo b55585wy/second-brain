@@ -1,0 +1,8 @@
+{
+  "baseUrl": "http://127.0.0.1:6806",
+  "version": "3.8.8",
+  "tokenFile": "E:\\second-brain\\runtime\\api-token.placeholder.txt",
+  "tokenProtection": "UTF-8 plaintext; current-user-only ACL required; placeholder file not created",
+  "exampleOnly": true,
+  "verified": false
+}

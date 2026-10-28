@@ -1,0 +1,61 @@
+{
+  "verifiedAtUtc": "2026-10-28T01:58:36.920421+00:00",
+  "scope": "Local single-user Beta0.1.0 on Windows/Node24.22.0, source-only private repository",
+  "testResults": {
+    "packaging": 16,
+    "backend": 163,
+    "backendTestFiles": 14,
+    "frontend": 33,
+    "frontendTestFiles": 8,
+    "aggregateCommand": "npm.cmd test",
+    "aggregateExitCode": 0,
+    "browser": {
+      "passed": 15,
+      "date": "2026-10-27",
+      "note": "V5 browser record; frontend unchanged, later backend ACL checked separately"
+    }
+  },
+  "nativeSiYuan": {
+    "version": "3.8.8",
+    "fixedLoopbackPort": 19006,
+    "knowledgeDocuments": 4,
+    "distinctReviewedCards": 4,
+    "nativeRatingValues": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "duplicateReplayAdditionalRatings": 0,
+    "normalDesktopRestartPersistence": true,
+    "exactCardFieldsCompared": [
+      "due",
+      "reps",
+      "lapses",
+      "state",
+      "lastReview"
+    ],
+    "documentComparison": "Question/answer/source/fenced content exact; native IAL and outside-code blank separators reported separately",
+    "authenticationScope": "Local service allowed empty Token and rejected an invalid nonempty Token; valid nonempty Token configuration was not tested",
+    "privateFilePermissions": "Windows protected DACL limited to current user, including migration of existing product credentials"
+  },
+  "codexCollection": {
+    "scope": "One explicitly authorized bounded real snapshot, not all live history",
+    "sources": 12,
+    "draftUnverifiedCandidates": 7,
+    "fullReplayNewSources": 0,
+    "fullReplayNewCandidates": 0
+  },
+  "unverifiedOptionalServices": [
+    "Feishu real credential authorization/import",
+    "Optional external model calls/output quality"
+  ],
+  "excludedFromRepository": [
+    "Personal databases",
+    "Credentials and token files",
+    "Original conversations and private snapshots",
+    "SiYuan workspaces and installer",
+    "Generated logs, traces, screenshots and node_modules"
+  ],
+  "publicationNote": "Counts summarize retained local evidence; no private payloads or raw service object IDs are included. Application license and future distribution model remain undecided."
+}

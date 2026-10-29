@@ -119,6 +119,26 @@ function modelFailures(f, codes, delayMs = 0) {
   return state;
 }
 
+test('invalid model fields retain safe diagnostics and unchanged receipts until a later valid response', async t => {
+  const f = await fixture(t);
+  f.state.transformResult = result => ({ ...result, MODEL_PAYLOAD_DO_NOT_ECHO: 'Untrusted extra content.' });
+  await enable(f.app); assert.equal((await settled(f.app)).status, 'failed');
+  const failed = f.app.store.all('automation-call')[0];
+  assert.equal(failed.status, 'failed');
+  assert.deepEqual(failed.validationIssue, { path: 'result', rule: 'object_fields' });
+  const status = await ok(f.app, 'GET', '/automation');
+  assert.equal(status.callsToday, 1); assert.equal(status.lastError.code, 'UPSTREAM_ERROR');
+  assert.ok(!JSON.stringify(status).includes('MODEL_PAYLOAD_DO_NOT_ECHO'));
+  assert.ok(!JSON.stringify(status).includes('Untrusted extra content.'));
+  assert.ok(f.app.store.all('automation-receipt').every(receipt => receipt.offset === 0));
+  assert.equal(f.app.store.all('focus-artifact').length, 0); assert.equal(f.app.store.all('practice').length, 0);
+  await advance(f, 60000); assert.equal(f.state.inputs.length, 1);
+  f.state.transformResult = null; await advance(f, 3540000);
+  assert.equal(f.state.inputs.length, 2); assert.ok((await ok(f.app, 'GET', '/today')).practice);
+  assert.deepEqual(f.app.store.require('automation-call', failed.id), failed);
+  assert.ok(f.app.store.all('automation-receipt').some(receipt => receipt.offset > 0));
+});
+
 test('a connection failure waits sixty seconds and recovers with one separately reserved attempt', async t => {
   const f = await fixture(t); const provider = modelFailures(f, ['UPSTREAM_UNAVAILABLE']);
   const started = +f.clock.value; await enable(f.app); assert.equal((await settled(f.app)).status, 'failed');

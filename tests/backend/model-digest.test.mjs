@@ -30,6 +30,20 @@ test('digest allows no relevant material and forbids a fabricated exercise in th
   await assert.rejects(modelFor({ highlights: [], exercise: valid().exercise }).model.digest(input()), error => error.code === 'UPSTREAM_ERROR');
 });
 
+test('digest prompt gives a valid JSON format example and all collection and text constraints without a repair request', async () => {
+  const f = modelFor(valid()); await f.model.digest(input());
+  const instruction = f.calls[0].options.body.messages[0].content;
+  const example = instruction.match(/FORMAT-ONLY example: (\{.*\})\n/);
+  assert.ok(example); assert.doesNotThrow(() => JSON.parse(example[1]));
+  for (const expected of ['"evidence":3', '"rubric":3', '"title":200', '"whyRelevant":500',
+    '"quote":1000', '"label":200', '"description":2000', '"expectedEvidence":10', '"expectedEvidenceText":500']) {
+    assert.ok(instruction.includes(expected), 'Missing output constraint: ' + expected);
+  }
+  assert.ok(instruction.includes('do not add fields at any level'));
+  assert.ok(instruction.includes('exact contiguous quotes'));
+  assert.equal(f.calls.length, 1);
+});
+
 test('zero learning budget permits highlights but no exercise', async () => {
   const request = input(); request.budgetMinutes = 0;
   const result = valid(); result.exercise = null;

@@ -277,7 +277,8 @@ export class Automation {
     } catch (error) {
       const call = this.store.get('automation-call', job.id);
       if (call?.status === 'reserved') this.store.put('automation-call', { ...call, status: error.uncertain ? 'uncertain' : 'failed',
-        failedAt: this.clock().toISOString(), errorCode: error.code ?? 'INTERNAL_ERROR' }, job.id);
+        failedAt: this.clock().toISOString(), errorCode: error.code ?? 'INTERNAL_ERROR',
+        ...(error.validationIssue ? { validationIssue: error.validationIssue } : {}) }, job.id);
       const continuing = call && this.state().hasMore;
       if (this.sameContext(context)) this.saveState({ phase: null, lastError: publicError(error).body.error, errorContext: context,
         lastErrorStage: call ? 'model' : 'collection', nextCollectAt: new Date(+this.clock() + (continuing ? STEP : HOUR)).toISOString() });

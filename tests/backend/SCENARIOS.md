@@ -1,5 +1,7 @@
 # Backend requirement scenarios
 
+0.3.2 digest-contract verification: **508/508 passed**, no skips, in a source-only copy with concurrency 1; packaging **35/35 passed**. Prompt and validator share all bounds; 104 direct validator scenarios cover text/list/index boundaries, exact evidence and safe diagnostics. A failed automatic response retains pending receipts and can recover later without an extra repair request. Frontend code is unchanged.
+
 0.3.1 quota-reset verification: **402/402 passed**, no skips, in a source-only copy with concurrency 1; packaging **35/35 passed**. Developer resets preserve the original ledger, cooldown and reserved-job protection while charging new requests against a fresh date-specific budget. Frontend code is unchanged.
 
 0.3.0 complete verification: **399/399 passed**, no skips, in a source-only copy with concurrency 1. Feishu requirements additionally cover [chat, delivery and answer scenarios](FEISHU-CHAT-SCENARIOS.md), registration preparation/expiry/cancellation, HTTP and SDK contracts, connection generations and explicit-off intent. Root frontend174, Kimi frontend173, packaging35 and synthetic browser10 passed; see [verification](../../docs/FEISHU-VERIFICATION-20261029.md).

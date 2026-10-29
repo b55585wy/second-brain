@@ -1,5 +1,7 @@
 # Backend requirement scenarios
 
+0.3.1 quota-reset verification: **402/402 passed**, no skips, in a source-only copy with concurrency 1; packaging **35/35 passed**. Developer resets preserve the original ledger, cooldown and reserved-job protection while charging new requests against a fresh date-specific budget. Frontend code is unchanged.
+
 0.3.0 complete verification: **399/399 passed**, no skips, in a source-only copy with concurrency 1. Feishu requirements additionally cover [chat, delivery and answer scenarios](FEISHU-CHAT-SCENARIOS.md), registration preparation/expiry/cancellation, HTTP and SDK contracts, connection generations and explicit-off intent. Root frontend174, Kimi frontend173, packaging35 and synthetic browser10 passed; see [verification](../../docs/FEISHU-VERIFICATION-20261029.md).
 
 All tests use isolated databases and fake upstreams. They must never write real SiYuan notes or collect real conversation history.

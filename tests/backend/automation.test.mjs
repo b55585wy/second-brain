@@ -56,6 +56,56 @@ async function settled(app) {
 
 async function advance(f, milliseconds) { f.clock.value = new Date(+f.clock.value + milliseconds); f.app.automation.tick(f.clock.value); return settled(f.app); }
 
+function resetQuota(app) {
+  const date = app.automation.date();
+  app.store.put('automation-quota-reset', { callIds: app.store.all('automation-call').filter(call => call.date === date).map(call => call.id) }, date);
+}
+
+test('a developer reset preserves the ledger and charges new failed and uncertain attempts against the fresh budget', async t => {
+  const f = await fixture(t); const date = f.app.automation.date();
+  const history = [3, 2, 1].map(hours => f.app.store.put('automation-call', { date, status: 'complete',
+    attemptedAt: new Date(+f.clock.value - hours * 3600000).toISOString() }, 'before-reset-' + hours));
+  const previousDay = f.app.store.put('automation-call', { date: '2026-10-27', status: 'complete' }, 'previous-day');
+  assert.equal((await ok(f.app, 'GET', '/automation')).callsToday, 3);
+  resetQuota(f.app); assert.equal((await ok(f.app, 'GET', '/automation')).callsToday, 0);
+  for (const status of ['failed', 'uncertain', 'complete']) f.app.store.put('automation-call', { date, status }, 'new-' + status);
+  assert.equal((await ok(f.app, 'GET', '/automation')).callsToday, 3);
+  await enable(f.app); await settled(f.app);
+  assert.equal(f.state.inputs.length, 0); assert.equal(f.app.automation.digestDue(), false);
+  resetQuota(f.app); assert.equal((await ok(f.app, 'GET', '/automation')).callsToday, 0);
+  assert.equal(f.app.automation.calls('2026-10-27').length, 1);
+  for (const old of [...history, previousDay]) assert.deepEqual(f.app.store.require('automation-call', old.id), old);
+  f.clock.value = new Date('2026-10-29T01:00:00.000Z');
+  f.app.store.put('automation-call', { date: f.app.automation.date(), status: 'failed' }, 'next-day');
+  assert.equal((await ok(f.app, 'GET', '/automation')).callsToday, 1);
+});
+
+test('a quota reset preserves the real cooldown and resumes eligible new analysis after one hour', async t => {
+  const f = await fixture(t); await enable(f.app); await settled(f.app);
+  const original = f.app.store.all('automation-call')[0]; const nextAttempt = f.app.automation.nextAttempt();
+  resetQuota(f.app); await profile(f.app, { goals: ['A revised reliable storage goal'] });
+  assert.deepEqual(f.app.automation.nextAttempt(), nextAttempt);
+  await advance(f, 3599999); assert.equal(f.state.inputs.length, 1);
+  assert.equal((await ok(f.app, 'GET', '/automation')).callsToday, 0);
+  await advance(f, 1); assert.equal(f.state.inputs.length, 2);
+  assert.equal((await ok(f.app, 'GET', '/automation')).callsToday, 1);
+  assert.deepEqual(f.app.store.require('automation-call', original.id), original);
+  assert.ok((await ok(f.app, 'GET', '/today')).practice);
+});
+
+test('a persisted quota reset survives SQLite restart and malformed markers leave usage counted', async t => {
+  const f = await fixture(t, { keep: true }); await enable(f.app); await settled(f.app);
+  const original = f.app.store.all('automation-call')[0]; resetQuota(f.app);
+  const root = f.app.collector.root; const collectorOptions = f.app.store.get('config', 'codex-options');
+  await f.app.close();
+  const app = await appFor(t, { root, rpcFactory: f.rpcFactory, automationClock: () => new Date(f.clock.value), collectorOptions });
+  assert.equal((await ok(app, 'GET', '/automation')).callsToday, 0);
+  assert.deepEqual(app.automation.lastCall(), original);
+  app.store.put('automation-quota-reset', { callIds: 'invalid' }, app.automation.date());
+  assert.equal((await ok(app, 'GET', '/automation')).callsToday, 1);
+  assert.deepEqual(app.store.require('automation-call', original.id), original);
+});
+
 function modelFailures(f, codes, delayMs = 0) {
   const original = f.app.model.digest.bind(f.app.model); const state = { attempts: 0 };
   f.app.model.digest = async input => {
@@ -291,12 +341,14 @@ test('each automatic capture processes at most one hundred visible source identi
   await advance(f, 15000); assert.equal(f.app.store.all('source').length, 120); assert.equal(f.app.store.all('knowledge').length, 0);
 });
 
-test('a queued job with an existing request reservation cannot resend after recovery', async t => {
+test('a queued job with an existing request reservation cannot resend after recovery or quota reset', async t => {
   const f = await fixture(t); await f.app.jobs.stop(); await enable(f.app);
   const job = f.app.store.all('job').find(item => item.kind === 'learning_automation');
   f.app.store.put('automation-call', { date: '2026-10-28', attemptedAt: f.clock.value.toISOString(), status: 'reserved', context: job.payload.context }, job.id);
+  f.app.store.put('automation-quota-reset', { callIds: [job.id] }, f.app.automation.date());
   f.app.jobs.start(); await settled(f.app);
-  assert.equal(f.state.inputs.length, 0); assert.equal((await ok(f.app, 'GET', '/automation')).callsToday, 1);
+  assert.equal(f.state.inputs.length, 0); assert.equal((await ok(f.app, 'GET', '/automation')).callsToday, 0);
+  assert.equal(f.app.store.require('automation-call', job.id).status, 'reserved');
 });
 
 test('the attempt ledger follows the profile timezone rather than the UTC date', async t => {

@@ -33,7 +33,12 @@ export class Automation {
   state() { return this.store.get('automation-state', 'main') ?? {}; }
   saveState(fields) { return this.store.put('automation-state', { ...this.state(), ...fields }, 'main'); }
   date(clock = this.clock()) { return dateInZone(clock, this.domain.profile().timeZone); }
-  calls(date = this.date()) { return this.store.all('automation-call').filter(call => call.date === date); }
+  calls(date = this.date()) {
+    // A local developer reset grants a new budget without rewriting the usage ledger.
+    const reset = this.store.get('automation-quota-reset', date);
+    const excluded = new Set(Array.isArray(reset?.callIds) ? reset.callIds : []);
+    return this.store.all('automation-call').filter(call => call.date === date && !excluded.has(call.id));
+  }
   modelKey() { return digest(this.settings.raw().model); }
 
   context() {

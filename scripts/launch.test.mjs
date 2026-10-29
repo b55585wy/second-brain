@@ -11,7 +11,7 @@ const read = file => readFileSync(resolve(PROJECT_ROOT, file), 'utf8');
 test('root package routes commands to real entry points and suites', () => {
   const pkg = JSON.parse(read('package.json'));
   const frontend = JSON.parse(read('frontend/package.json'));
-  assert.equal(pkg.version, '0.3.0');
+  assert.equal(pkg.version, '0.3.1');
   assert.equal(pkg.private, true);
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.engines.node, '>=24.22.0');

@@ -1,6 +1,6 @@
 {
   "name": "second-brain",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "本地个人项目知识与学习应用，使用独立 SiYuan 运行时保存已审核知识",
   "type": "module",

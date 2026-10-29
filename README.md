@@ -4,6 +4,8 @@
 
 **日常只需打开「今天」，看重点，写输出。** 档案、对话范围和模型配置一次即可开启自动整理。详见 [使用 SOP](docs/DAILY-SOP.md) 与 [简化目标](docs/SIMPLICITY.md)。旧手动版已固定为 [实验对照 Release](https://github.com/b55585wy/second-brain/releases/tag/control-manual-v0.1.0-20261028)；[CHI 研究草案](docs/CHI-RESEARCH-PLAN.md)区分了产品验收与尚待验证的研究结论。
 
+开发计划：[短期迭代计划](docs/NEXT-ITERATION.md) · [产品路线图](docs/ROADMAP.md)。计划中的条目尚未交付，当前可用能力见 [实施状态](docs/IMPLEMENTATION-STATUS.md)。
+
 ## 从源码初始化
 
 仓库保存源码、依赖锁文件、测试和文档。个人数据库、凭据、对话快照、思源工作区、安装包和生成产物保留在本机，不随 Git 提交。下文的已连接状态指当前已验收的本机部署；克隆源码后需要重新构建和配置。[脱敏验收摘要](docs/verification/2026-10-28.json)随源码保存，原始日志与截图仅在原机器保留。

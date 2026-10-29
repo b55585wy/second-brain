@@ -366,14 +366,14 @@ export class Collector {
     fail(503, 'CAPABILITY_UNSUPPORTED', 'Codex 未提供完整可见对话，可使用手工导入。');
   }
 
-  ingest(thread, messages, projectId = null, origin = 'codex', questionSourceId) {
+  ingest(thread, messages, projectId = null, origin = 'codex', questionSourceId, extractCandidates = true) {
     this.domain.project(projectId, true);
     let questionSource = questionSourceId === undefined
       ? this.store.all('source').filter(item => item.kind === origin && item.threadId === thread.id && item.role === 'user').sort((a,b) => b.capturedAt.localeCompare(a.capturedAt))[0] ?? null
       : questionSourceId === null ? null : this.store.get('source', questionSourceId);
     if (questionSourceId !== undefined && questionSourceId !== null && (!questionSource || questionSource.kind !== origin || questionSource.threadId !== thread.id || questionSource.role !== 'user')) fail(409, 'INVALID_STATE', '续采的提问来源已失效，请重新选择采集范围。');
     let question = questionSource?.content ?? null;
-    const results = { sources: 0, candidates: 0, updated: 0, knowledgeIds: [] };
+    const results = { sources: 0, candidates: 0, updated: 0, knowledgeIds: [], capturedSourceIds: [] };
     this.store.transaction(() => {
       for (const message of messages) {
         const identity = messageIdentity(thread.id, message.id);
@@ -382,11 +382,12 @@ export class Collector {
         const source = this.sources.capture({ kind: origin, origin: origin === 'codex' ? 'codex-app-server' : 'manual-import',
           externalId: identity, threadId: thread.id, messageId: message.id, title: thread.title ?? '导入对话',
           role: message.role, occurredAt: message.occurredAt ?? null, content: message.text });
+        if (!results.capturedSourceIds.includes(source.id)) results.capturedSourceIds.push(source.id);
         if (!previous) results.sources++;
         else if (previous.contentDigest !== source.contentDigest) results.updated++;
         if (message.role === 'user') { question = source.content; questionSource = source; continue; }
         const candidateId = `kn_${digest([source.kind, source.externalId]).slice(0, 48)}`;
-        if (!this.store.get('knowledge', candidateId)) {
+        if (extractCandidates && !this.store.get('knowledge', candidateId)) {
           this.sources.candidate({ source, projectId, question: question ?? `请核验：${thread.title ?? '对话摘录'}`,
             answer: source.content, refs: [...(questionSource ? [this.sources.ref(questionSource)] : []), this.sources.ref(source)] });
           results.candidates++;
@@ -403,10 +404,10 @@ export class Collector {
     if (!scope.enabled || !scope.allowedThreadIds.length && !scope.allowedProjectPaths.length) fail(403, 'SCOPE_FORBIDDEN', '请先启用明确选择的线程采集范围。');
     this.assertScope(scope);
     const scopeKey = digest([scope.revision, Object.fromEntries(Object.keys(DEFAULT_SCOPE).map(key => [key, scope[key]])),
-      request.threadIds ? [...new Set(request.threadIds)].sort() : null, request.projectId ?? null]);
+      request.threadIds ? [...new Set(request.threadIds)].sort() : null, request.projectId ?? null, ...(request.captureOnly ? ['capture-only'] : [])]);
     const savedCheckpoint = this.store.get('collector-cursor', scopeKey);
     const checkpoint = savedCheckpoint?.scopeRevision === scope.revision ? savedCheckpoint : null;
-    const counts = { threads: 0, sources: 0, candidates: 0, updated: 0, truncated: false, knowledgeIds: [] };
+    const counts = { threads: 0, sources: 0, candidates: 0, updated: 0, truncated: false, knowledgeIds: [], capturedSourceIds: [] };
     const maximumThreads = request.maxThreads ?? 20;
     const maximumMessages = request.maxMessages ?? 500;
     let captured = 0;
@@ -472,7 +473,8 @@ export class Collector {
           const hasMore = hasVisibleTail || chunk.nextCursor !== null;
           this.store.transaction(() => {
             this.assertScope(scope, thread);
-            result = this.ingest(this.publicThread(thread), batch, request.projectId ?? null, 'codex', userSourceId);
+            result = this.ingest(this.publicThread(thread), batch, request.projectId ?? null, 'codex', userSourceId, !request.captureOnly);
+            if (typeof request.onCaptured === 'function') request.onCaptured(result.capturedSourceIds);
             this.store.put('collector-thread', { offset: hasVisibleTail ? startOffset + batch.length : 0, lastSyncedAt: now(), scopeRevision: scope.revision,
               nativeCursor: hasVisibleTail ? state?.nativeCursor ?? null : chunk.nextCursor,
               nativeMode: hasMore ? chunk.mode : null, nativeCursorCheck: hasVisibleTail ? state?.nativeCursorCheck ?? null : chunk.cursorCheck,
@@ -488,6 +490,7 @@ export class Collector {
           counts.threads++;
           for (const key of ['sources', 'candidates', 'updated']) counts[key] += result[key];
           counts.knowledgeIds.push(...result.knowledgeIds);
+          counts.capturedSourceIds.push(...result.capturedSourceIds.filter(sourceId => !counts.capturedSourceIds.includes(sourceId)));
           if (hasMore) { counts.truncated = true; return counts; }
         }
         const finished = !progress.nextCursor && (!scope.includeArchived || progress.archived);

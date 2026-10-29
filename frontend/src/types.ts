@@ -340,4 +340,36 @@ export interface ExportArtifact {
   sha256: string;
 }
 
+export interface Automation {
+  enabled: boolean;
+  revision: number;
+  state: 'off' | 'setup' | 'collecting' | 'organizing' | 'ready' | 'waiting' | 'limited' | 'error';
+  message: string;
+  setup: { profile: boolean; scope: boolean; model: boolean };
+  dailyCallLimit: 3;
+  callsToday: number;
+  nextRunAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: { code: string; message: string; retryable: boolean } | null;
+}
+
+export interface TodayHighlight {
+  id: string;
+  title: string;
+  summary: string;
+  goal: string;
+  whyRelevant: string;
+  sourceRefs: SourceRef[];
+}
+
+export interface TodayData {
+  date: string;
+  profile: LearningProfile;
+  automation: Automation;
+  highlights: TodayHighlight[];
+  practice: Practice | null;
+  attempt: PracticeAttempt | null;
+  generatedAt: string | null;
+}
+
 export interface ListData<T> { items: T[]; total: number }

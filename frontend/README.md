@@ -12,12 +12,12 @@ npm.cmd test
 npm.cmd run build     # 输出 dist，由后端同源托管
 ```
 
-## 本轮实际联调结果
+## 本轮隔离验证结果
 
-在 `E:/second-brain/frontend` 已执行并通过：
+在本隔离 `frontend/` 已执行并通过：
 
 - `npm.cmd run typecheck`：TypeScript 类型检查通过；
-- `npm.cmd test`：8 个测试文件、33 个测试全部通过；
+- `npm.cmd test -- --exclude src/services/api.contract.test.ts`：9 个测试文件、113 个测试全部通过；
 - `npm.cmd run build`：生产构建通过，输出 `dist/`；
 - V4 既有 `npm.cmd audit --json` 与 `npm.cmd audit --omit=dev --json` 结果：均为 0 个漏洞，无剩余公告；本轮无依赖变化。
 
@@ -41,8 +41,8 @@ npm.cmd run build     # 输出 dist，由后端同源托管
 1. **通用写入**：`src/services/api.ts` 对每个非 GET/HEAD 请求生成一个 `operationId`，显式提供的 ID 原样保留。档案、项目、知识、输出、设置、思源和 Codex 范围从真实响应追踪修订；更新发送 `expectedRevision`。冲突提示重新加载并保留输入，用户无需填写修订或操作 ID。
 2. **知识**：`sourceRefs` 始终保留结构化身份。已有引用编码为 `{sourceId}`，新增 URL/摘录编码为 `{kind:"manual",title,url,excerpt}`；编辑不清空或伪造来源身份。展示标题、URL 和摘录，不直接渲染对象。已接受内容编辑后可复核接受，拒绝与同步使用实际修订。接受状态与事实核验徽标独立；核验仅读取 `validation.status` 的 `unverified/supported/contradicted/mixed`，缺失或未知值显示“未核验”，接受/同步/相关性不代表事实正确，证据状态也不保证绝对真理。
 3. **来源导入与 Codex**：来源导入区分 `siyuan_document`、`siyuan_block`、`feishu_document` 及各自标识。手动对话使用 `externalSourceId` 和 `sourceMessageId/role/content/occurredAt`。范围使用七个真实授权字段；自动列表失败不阻断手动后备。
-4. **设置**：使用 `model.endpoint/provider/enabled/allowExternalProcessing/apiKey`、`feishu.appId/appSecret/apiBase/enabled` 和完整 scheduler 字段。秘密省略保留，只有勾选明确删除才发送 `null`；模型外部处理 consent 单独勾选。响应只展示 configured 标志。
-5. **今日**：无目标时“下一步”只提供 `/settings` 学习目标入口，不显示或触发生成/重排，空计划不重复提供生成主按钮。已配置目标生成发送档案和计划双修订，作业成功后才重新读取。零预算继续禁用暂停；未知 SiYuan 到期数保持未知并显示连接状态，不写成零或已完成。
+4. **设置**：档案与独立自动整理开关位于首屏；模型、飞书和 scheduler 高级配置折叠，`#profile/#model` 可直接定位。设置保存仍严格使用 `model/feishu/scheduler` 三个对象，秘密省略保留，只有勾选明确删除才发送 `null`；自动整理不写入 SettingsInput。
+5. **今日与每日计划**：`/` 只展示 `/today` 返回的最多三条重点和一项练习，状态文案采用 `automation.message`，设置入口按 profile、scope、model 顺序只显示第一项。每次成功的 `/today` 响应都权威替换重点和练习，包括任何 automation 状态下的 `[]`/`null`；pending 或 rejected 请求保留当前显示，仍有效的旧 focus 由服务端显式返回。成功返回 null practice 时，本地已确认尝试不会使其复活。每次轮询完成或失败后继续调度，请求不重叠；同一练习的草稿、已保存输出、反馈与错误隔离保护保持不变，切换练习不会被迟到结果污染。尝试保存后自动请求模板反馈，反馈失败可单独重试且不会重复提交尝试。自动整理以显式修订防止旧 GET 撤销新 PUT。原生成、暂停、时区、双修订和未知到期数计划流程完整保留在 `/plan`。
 6. **练习与输出**：辅助程度为 `none/hint/partial/full`，证据使用真实 `EvidenceRef`。Rubric 显示标签、说明和所需证据；模板反馈全部保持未评估，不生成掌握百分比。输出创建提供八个业务字段，更新带修订。
 7. **复习**：使用嵌套 card/presentation、`again/hard/good/easy` 和实际评分作业。待确认操作保留会话、呈现、操作 ID 和回忆输入，安全重试复用同一身份。
 8. **导出**：使用 `scope/projectIds/includeSourceContent`，把服务端 `content` 下载为安全文件名的 JSON Blob，不制造下载 URL。
@@ -51,4 +51,4 @@ npm.cmd run build     # 输出 dist，由后端同源托管
 
 ## 当前状态边界
 
-本轮仅修改前端，未启动浏览器、服务或生产 18997，未新增重复 SiYuan 客户端测试。后端与整体集成的当前状态以 [`../docs/IMPLEMENTATION-STATUS.md`](../docs/IMPLEMENTATION-STATUS.md) 为准；旧的第三轮后端发现不作为当前未决问题复述。
+Kimi 隔离交付未访问生产服务或个人数据；随后 Codex 完成完整前端 114/114（含后端合约）、生产构建及 8 个真实浏览器合成场景。最终状态和截图见 [整体验收](../docs/SIMPLE-VERIFICATION-20261029.md)。

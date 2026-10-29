@@ -16,6 +16,7 @@ import { Jobs } from './jobs.mjs';
 import { Reviews } from './reviews.mjs';
 import { Backup } from './backup.mjs';
 import { Scheduler } from './scheduler.mjs';
+import { Automation } from './automation.mjs';
 import { Http, response } from './http.mjs';
 import { FIELDS, dto, select } from './dto.mjs';
 import { list, onlyFields, expectedRevision, choice, integer, text, strings, dateInZone, now, digest } from './validation.mjs';
@@ -58,7 +59,8 @@ export function createApp(options = {}) {
   const jobs = new Jobs(store, settings);
   const reviews = new Reviews(store, domain, siyuan, jobs, learning);
   const backup = new Backup(store, domain, sources, secrets, jobs, version);
-  const scheduler = new Scheduler(store, settings, domain, learning, collector, jobs);
+  const automation = new Automation(store, settings, domain, sources, collector, learning, model, jobs, { clock: options.automationClock });
+  const scheduler = new Scheduler(store, settings, domain, learning, collector, jobs, automation);
   const http = new Http(store, secrets, { root, frontendDir: options.frontendDir ?? resolve(root, 'frontend/dist'), port: options.port ?? 18997, origin: options.origin });
   const route = (method, path, handler, config) => http.route(method, path.startsWith('/api/') ? path : `/api/v1${path}`, handler, config);
   const sourceDto = record => ({ ...sources.ref(record), projectId: record.projectId ?? null, text: record.content ?? '', revision: record.revision, updatedAt: record.updatedAt });
@@ -69,7 +71,12 @@ export function createApp(options = {}) {
     notices: [{ code: 'MANUAL_REVIEW_REQUIRED', message: '来源和摘录草稿均未经事实核验，请明确审核。' }, { code: 'ANCESTRY_UNAVAILABLE', message: '未使用未经证明的跨线程继承去重。' }] });
 
   jobs.register('manual_dialogue_import', payload => collectionResult(collector.importTranscript(payload)));
-  jobs.register('codex_sync', async payload => {
+  jobs.register('learning_automation', (payload, job) => automation.run(payload, job));
+  jobs.register('codex_sync', async (payload, job) => {
+    if (automation.config().enabled && (job?.trigger === 'scheduler' || payload.trigger === 'scheduler')) return {
+      ...collectionResult({ sources: 0, updated: 0, candidates: 0, truncated: false, knowledgeIds: [] }),
+      notices: [{ code: 'SUPERSEDED_BY_AUTOMATION', message: '自动整理已开启，本次旧定时采集已跳过。' }],
+    };
     const result = collectionResult(await collector.sync(payload.scope, payload.request));
     const state = store.get('config', 'codex-check') ?? {};
     store.put('config', { ...state, lastSyncAt: now() }, 'codex-check');
@@ -270,6 +277,9 @@ export function createApp(options = {}) {
   route('POST', '/review-sessions/:id/responses', ({ params, body }) => reviews.queueResponse(params.id, input(body, ['presentationId', 'cardId', 'rating', 'elapsedMs', 'answer']), body.operationId), { status: 202 });
 
   route('GET', '/settings', () => settings.public());
+  route('GET', '/automation', () => automation.public());
+  route('PUT', '/automation', ({ body }) => automation.update(input(body, ['enabled'], automation.config())));
+  route('GET', '/today', () => automation.today());
   route('PUT', '/settings', ({ body }) => settings.update(input(body, ['model', 'feishu', 'scheduler'], settings.raw())));
   route('GET', '/jobs/:id', ({ params }) => jobs.public(params.id));
   route('GET', '/jobs', ({ query }) => filter(store.all('job').map(record => jobs.public(record.id)), query), { query: [...PAGE, 'status', 'type'] });
@@ -304,7 +314,7 @@ export function createApp(options = {}) {
   });
 
   let closed = false;
-  return { server: http.server, store, secrets, settings, sources, domain, siyuan, feishu, model, collector, learning, jobs, reviews, backup, scheduler,
+  return { server: http.server, store, secrets, settings, sources, domain, siyuan, feishu, model, collector, learning, jobs, reviews, backup, scheduler, automation,
     async listen(port) { const address = await http.listen(port); jobs.start(); if (options.scheduler !== false) scheduler.start(); return address; },
     async close() { if (closed) return; closed = true; scheduler.stop(); await collector.close(); await http.close(); await jobs.stop(); store.close(); },
     get origin() { return http.origin; }, version,

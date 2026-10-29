@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { TodayPage } from './pages/TodayPage';
+import { PlanPage } from './pages/PlanPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { KnowledgePage } from './pages/KnowledgePage';
@@ -18,6 +19,7 @@ export default function App() {
     <Route path="codex" element={<CodexPage />} />
     <Route path="review" element={<ReviewPage />} />
     <Route path="practice" element={<PracticePage />} />
+    <Route path="plan" element={<PlanPage />} />
     <Route path="settings" element={<SettingsPage />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Route></Routes>;

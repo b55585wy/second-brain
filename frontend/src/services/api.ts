@@ -6,9 +6,9 @@ import type {
 } from '../types';
 import type { Checkpoint } from '../types';
 import {
-  normalizeAttempt, normalizeConnections, normalizeDailyPlan, normalizeDashboard,
+  normalizeAttempt, normalizeAutomation, normalizeConnections, normalizeDailyPlan, normalizeDashboard,
   normalizeJob, normalizeKnowledge, normalizeKnowledgeList, normalizePracticeList,
-  normalizeProfile, normalizeReviewAnswer, normalizeReviewPrompt,
+  normalizeProfile, normalizeReviewAnswer, normalizeReviewPrompt, normalizeToday,
 } from './adapters';
 
 const API_ROOT = '/api/v1';
@@ -52,7 +52,13 @@ function rememberRecords(path: string, value: unknown): void {
 
 function captureRevisions(path: string, value: unknown): void {
   const pathname = path.split('?')[0];
-  if (['/learning-profile', '/settings', '/connections/codex/scope', '/daily-plan'].includes(pathname)) remember(pathname, value);
+  if (['/learning-profile', '/settings', '/connections/codex/scope', '/daily-plan', '/automation'].includes(pathname)) remember(pathname, value);
+  if (pathname === '/today' && isFields(value)) {
+    remember('/learning-profile', value.profile);
+    remember('/automation', value.automation);
+    if (isFields(value.practice) && typeof value.practice.id === 'string') remember(`/practices/${value.practice.id}`, value.practice);
+    if (isFields(value.attempt) && typeof value.attempt.id === 'string') remember(`/attempts/${value.attempt.id}`, value.attempt);
+  }
   if (pathname === '/dashboard' && isFields(value)) {
     remember('/learning-profile', value.profile);
     remember('/daily-plan', value.dailyPlan);
@@ -183,6 +189,9 @@ function assertSafeExport(artifact: ExportArtifact): void {
 }
 
 export const api = {
+  automation: async () => normalizeAutomation(await get<unknown>('/automation')),
+  saveAutomation: async (enabled: boolean, revision: number, id = operationId()) => normalizeAutomation(await put<unknown>('/automation', { operationId: id, expectedRevision: revision, enabled })),
+  today: async () => normalizeToday(await get<unknown>('/today')),
   dashboard: async () => normalizeDashboard(await get<unknown>('/dashboard')),
   dailyPlan: async (date: string) => normalizeDailyPlan(await get<unknown>(`/daily-plan?date=${encodeURIComponent(date)}`)),
   generateDailyPlan: async (date: string, profileRevision?: number, planRevision?: number) => {

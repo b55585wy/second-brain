@@ -1,72 +1,229 @@
-import { ArrowRight, Check, Clock3, RefreshCw } from 'lucide-react';
-import { useState } from 'react';
+import { ArrowRight, Check, Send } from 'lucide-react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { EmptyState, ErrorState, Loading, Notice, PageHeader, SafeText, Section, Button } from '../components/ui';
-import { useApi } from '../hooks/useApi';
-import { api } from '../services/api';
-import { dateInTimeZone, errorMessage } from '../utils/text';
+import { SourceRefs } from '../components/SourceRefs';
+import { Badge, Button, EmptyState, ErrorState, Field, Loading, Notice, PageHeader, SafeText, Section, Textarea } from '../components/ui';
+import { api, evidenceRefInputs } from '../services/api';
+import type { Automation, Feedback, PracticeAttempt, TodayData } from '../types';
+import { errorMessage } from '../utils/text';
+
+const draftKey = (id: string) => `zhixing.todayDraft.${id}`;
+
+function setupEntry(automation: Automation) {
+  if (!automation.setup.profile) return { to: '/settings#profile', label: '先完善学习档案' };
+  if (!automation.setup.scope) return { to: '/codex', label: '选择可读取的对话' };
+  if (!automation.setup.model) return { to: '/settings#model', label: '配置模型服务' };
+  return null;
+}
+
+function TemplateFeedback({ feedback }: { feedback: Feedback }) {
+  return <details className="mt-5 border-t border-line pt-5">
+    <summary className="cursor-pointer text-sm text-accent">核对要点</summary>
+    <div className="mt-4">
+      <p className="text-sm text-muted">这是自查提示，未自动判分</p>
+      <div className="mt-3"><Badge>{feedback.mode === 'template' ? '模板反馈 · 未核验正确性' : feedback.mode === 'model' ? '模型建议 · 需要核验' : '人工反馈'}</Badge></div>
+      <SafeText className="mt-3">{feedback.summary}</SafeText>
+      {feedback.observations.length > 0 && <ul className="mt-4 space-y-3">{feedback.observations.map((observation) => <li key={observation.criterionId} className="border-l border-line pl-4 text-sm"><span className="font-medium">{observation.finding === 'not_assessed' ? '未评估' : observation.finding === 'met' ? '已达到' : observation.finding === 'partial' ? '部分达到' : '未达到'}</span><SafeText className="mt-1 text-muted">{observation.comment}</SafeText></li>)}</ul>}
+      {feedback.nextActions.length > 0 && <div className="mt-4"><h3 className="text-sm font-medium">可继续核对的方向</h3><ul className="mt-2 list-disc pl-5 text-sm text-muted">{feedback.nextActions.map((action) => <li key={action}>{action}</li>)}</ul></div>}
+      {feedback.limitations.length > 0 && <ul className="mt-4 list-disc pl-5 text-sm text-muted">{feedback.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>}
+    </div>
+  </details>;
+}
 
 export function TodayPage() {
-  const resource = useApi(async () => {
-    const dashboard = await api.dashboard();
-    const date = dashboard.date || dateInTimeZone(dashboard.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone);
-    const plan = dashboard.dailyPlan || await api.dailyPlan(date);
-    return { dashboard, plan, date };
-  }, []);
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState('');
-  const dashboard = resource.data?.dashboard;
-  const plan = resource.data?.plan;
-  const paused = plan?.budgetMinutes === 0 || dashboard?.dailyBudgetMinutes === 0;
-  const hasGoals = Boolean(dashboard?.profile.goals.length);
+  const [data, setData] = useState<TodayData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshError, setRefreshError] = useState('');
+  const [automationError, setAutomationError] = useState('');
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
+  const [output, setOutput] = useState('');
+  const [automationBusy, setAutomationBusy] = useState(false);
+  const [practiceBusy, setPracticeBusy] = useState<Record<string, 'attempt' | 'feedback'>>({});
+  const [pollCompletion, setPollCompletion] = useState(0);
+  const dataRef = useRef<TodayData | null>(null);
+  const inFlight = useRef(false);
+  const mounted = useRef(true);
+  const pendingActions = useRef(new Set<string>());
+  const confirmedAttempts = useRef(new Map<string, PracticeAttempt>());
 
-  async function generate() {
-    if (!resource.data || paused || !hasGoals) return;
-    setBusy(true); setActionError('');
+  const refresh = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    if (!dataRef.current) setLoading(true);
     try {
-      await api.generateDailyPlan(resource.data.date, resource.data.dashboard.profile.revision, resource.data.plan.revision);
-      resource.reload();
-    } catch (error) { setActionError(errorMessage(error)); }
-    finally { setBusy(false); }
+      const next = await api.today();
+      if (!mounted.current) return;
+      const previous = dataRef.current;
+      const nextAutomation = previous && next.automation.revision < previous.automation.revision ? previous.automation : next.automation;
+      const nextPractice = next.practice;
+      const samePractice = nextPractice?.id === previous?.practice?.id;
+      const returnedAttempt = next.attempt?.practiceId === nextPractice?.id ? next.attempt : null;
+      let nextAttempt = returnedAttempt ?? (nextPractice ? confirmedAttempts.current.get(nextPractice.id) ?? (samePractice ? previous?.attempt ?? null : null) : null);
+      if (nextAttempt && previous?.attempt?.id === nextAttempt.id && previous.attempt.feedback && !nextAttempt.feedback) nextAttempt = { ...nextAttempt, feedback: previous.attempt.feedback };
+      const merged = { ...next, automation: nextAutomation, practice: nextPractice, attempt: nextAttempt };
+      dataRef.current = merged;
+      setData(merged);
+      setRefreshError('');
+    } catch (reason) {
+      if (mounted.current) setRefreshError(errorMessage(reason));
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) {
+        setLoading(false);
+        setPollCompletion((value) => value + 1);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    void refresh();
+    return () => { mounted.current = false; };
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!pollCompletion) return;
+    const state = dataRef.current?.automation.state;
+    const delay = state && ['collecting', 'organizing'].includes(state) ? 4000 : 60000;
+    const timer = window.setTimeout(() => void refresh(), delay);
+    return () => window.clearTimeout(timer);
+  }, [pollCompletion, refresh]);
+
+  const practice = data?.practice ?? null;
+  const practiceId = practice?.id ?? '';
+  const attempt = data?.attempt ?? null;
+  const busy = practiceBusy[practiceId] ?? '';
+  const actionError = actionErrors[practiceId] ?? '';
+  useEffect(() => {
+    setOutput(practiceId ? localStorage.getItem(draftKey(practiceId)) || '' : '');
+  }, [practiceId]);
+
+  function setPracticeError(id: string, message: string) {
+    setActionErrors((current) => {
+      const next = { ...current };
+      if (message) next[id] = message;
+      else delete next[id];
+      return next;
+    });
   }
 
-  if (resource.loading) return <Loading />;
-  if (resource.error || !resource.data) return <><PageHeader title="今天" /><ErrorState error={resource.error} retry={resource.reload} /></>;
-  const next = plan?.items.find((item) => item.state !== 'completed');
-  const siyuan = dashboard?.connections?.find((item) => item.provider === 'siyuan');
-  const reviewText = typeof dashboard?.reviewDueCount === 'number'
-    ? dashboard.reviewDueCount > 0 ? `有 ${dashboard.reviewDueCount} 条知识等待回顾。` : '当前没有待复习知识。'
-    : `尚未获得真实到期数量。思源状态：${siyuan?.configured ? '已配置，连接未确认或不可用' : '未配置'}。`;
+  function setPracticeAction(id: string, action: 'attempt' | 'feedback' | null) {
+    setPracticeBusy((current) => {
+      const next = { ...current };
+      if (action) next[id] = action;
+      else delete next[id];
+      return next;
+    });
+  }
 
-  return <div className="grid gap-10 xl:grid-cols-[minmax(0,1fr)_300px]">
-    <div>
-      <PageHeader eyebrow={new Intl.DateTimeFormat('zh-CN', { dateStyle: 'full' }).format(new Date(`${resource.data.date}T12:00:00`))} title="今天，从这里继续" description="只保留当前目标、下一步和需要回顾的内容。" actions={hasGoals ? <Button variant="secondary" onClick={generate} disabled={busy || paused}><RefreshCw className="h-4 w-4" />{paused ? '今日计划已暂停' : busy ? '任务执行中…' : '重新安排今天'}</Button> : undefined} />
-      {actionError && <div className="mb-6"><Notice tone="error">{actionError}<div className="mt-2"><Button variant="secondary" onClick={resource.reload}>重新加载最新计划</Button></div></Notice></div>}
-      {dashboard?.limitations.length ? <div className="mb-6"><Notice>{dashboard.limitations.join('；')}</Notice></div> : null}
-      <section className="border-l-2 border-accent pl-5 sm:pl-8">
-        <p className="eyebrow mb-3">下一步</p>
-        {paused ? <EmptyState title="今日学习已暂停" description="每日预算为 0 分钟。需要恢复时，请到学习档案设置新的时间预算。" action={<Link to="/settings" className="btn-secondary">编辑时间预算</Link>} /> : !hasGoals ? <EmptyState title="先设置学习目标" description="今日计划只会围绕你保存的真实目标生成。" action={<Link to="/settings" className="btn-primary">设置学习目标<ArrowRight className="h-4 w-4" /></Link>} /> : next ? <><h2 className="max-w-3xl text-2xl leading-relaxed sm:text-3xl">{next.title}</h2>{next.goal && <SafeText className="mt-4 max-w-3xl text-muted">{next.goal}</SafeText>}<div className="mt-5 flex flex-wrap gap-3"><Link className="btn-primary" to={next.kind === 'review' ? '/review' : next.kind === 'practice' ? '/practice' : '/practice'}>开始处理<ArrowRight className="h-4 w-4" /></Link><span className="inline-flex items-center gap-2 text-sm text-muted"><Clock3 className="h-4 w-4" />今日预算 {plan?.budgetMinutes ?? dashboard?.dailyBudgetMinutes ?? 15} 分钟</span></div></> : <EmptyState title="还没有下一步" description="根据已保存的目标生成今日计划。" action={<Button onClick={generate} disabled={busy}>生成今日计划</Button>} />}
-      </section>
-      <Section title="今日安排" description={`${plan?.items.length ?? 0} 项 · 完成后由后端记录进度`} className="mt-12">
-        {paused ? <EmptyState title="没有计划项" description="暂停期间不生成学习任务。" /> : plan?.items.length ? <ol className="divide-y divide-line border-y border-line">{plan.items.map((item, index) => {
-          const completed = item.state === 'completed';
-          const reason = item.relevance?.reason || item.selectionReason;
-          return <li key={item.id} className="flex items-start gap-4 py-4"><span className="mt-1 w-6 text-sm text-muted">{String(index + 1).padStart(2, '0')}</span><div className="min-w-0 flex-1"><p className={completed ? 'text-muted line-through' : ''}>{item.title}</p><p className="mt-1 text-xs text-muted">{item.kind === 'review' ? '记忆复习' : item.kind === 'practice' ? '应用练习' : '成果写作'} · {item.estimatedMinutes} 分钟</p>{reason && <p className="mt-2 text-xs text-accent">入选理由：{reason}</p>}</div>{completed && <Check className="h-5 w-5 text-accent" aria-label="已完成" />}</li>;
-        })}</ol> : <EmptyState title="今天尚未安排" description="计划只会使用已经保存的目标、知识和项目，不会补造学习内容。" />}
-      </Section>
-    </div>
-    <aside className="space-y-8 xl:border-l xl:border-line xl:pl-8">
-      <Section title="当前目标" action={<Link to="/settings" className="text-sm text-accent hover:underline">编辑</Link>}>
-        {dashboard?.goals.length ? <ul className="space-y-3">{dashboard.goals.map((goal) => <li key={goal} className="border-b border-line pb-3 text-sm leading-6">{goal}</li>)}</ul> : <p className="text-sm text-muted">尚未设置目标。到学习档案中写下真实目标。</p>}
-      </Section>
-      <Section title="回顾与练习">
-        <p className="text-sm text-muted">{reviewText}</p>
-        {dashboard?.reviewDueCount === null && <Link to="/settings" className="mt-2 inline-block text-sm text-accent hover:underline">查看思源连接设置</Link>}
-        <div className="mt-4 flex flex-col items-start gap-2"><Link to="/review" className="btn-secondary w-full">开始复习<ArrowRight className="h-4 w-4" /></Link><Link to="/practice" className="btn-ghost w-full justify-start px-0">做一次输出练习</Link></div>
-      </Section>
-      <Section title="最近项目节点">
-        {dashboard?.recentCheckpoint ? <div><p className="text-xs text-muted">{dashboard.recentCheckpoint.projectTitle || '最近项目'}</p><SafeText className="mt-2 text-sm">{dashboard.recentCheckpoint.progress}</SafeText><p className="mt-3 text-sm"><span className="text-muted">下一步：</span>{dashboard.recentCheckpoint.nextAction}</p><Link to="/projects" className="mt-3 inline-block text-sm text-accent hover:underline">查看项目</Link></div> : <p className="text-sm text-muted">完成一次项目推进后，在这里留下进度与下一步。</p>}
-      </Section>
-    </aside>
+  function adoptAttempt(saved: PracticeAttempt) {
+    confirmedAttempts.current.set(saved.practiceId, saved);
+    const current = dataRef.current;
+    if (current?.practice?.id !== saved.practiceId) return;
+    const merged = { ...current, attempt: saved };
+    dataRef.current = merged;
+    setData(merged);
+  }
+
+  async function toggleAutomation() {
+    const current = dataRef.current;
+    if (!current || pendingActions.current.has('automation')) return;
+    pendingActions.current.add('automation');
+    setAutomationBusy(true); setAutomationError('');
+    try {
+      const saved = await api.saveAutomation(!current.automation.enabled, current.automation.revision);
+      if (!mounted.current) return;
+      const latest = dataRef.current;
+      if (latest) {
+        const merged = { ...latest, automation: saved.revision >= latest.automation.revision ? saved : latest.automation };
+        dataRef.current = merged;
+        setData(merged);
+      }
+      await refresh();
+    } catch (reason) {
+      if (mounted.current) setAutomationError(errorMessage(reason));
+    } finally {
+      pendingActions.current.delete('automation');
+      if (mounted.current) setAutomationBusy(false);
+    }
+  }
+
+  async function requestFeedback(savedAttempt: PracticeAttempt) {
+    const id = savedAttempt.practiceId;
+    const key = `feedback:${savedAttempt.id}`;
+    if (pendingActions.current.has(key)) return;
+    pendingActions.current.add(key);
+    setPracticeAction(id, 'feedback'); setPracticeError(id, '');
+    try {
+      const feedback = await api.feedback(savedAttempt.id, id, 'template');
+      if (mounted.current) adoptAttempt({ ...savedAttempt, feedback });
+    } catch (reason) {
+      if (mounted.current) setPracticeError(id, `本次输出已保存。核对要点暂不可用：${errorMessage(reason)}`);
+    } finally {
+      pendingActions.current.delete(key);
+      if (mounted.current) setPracticeAction(id, null);
+    }
+  }
+
+  async function submitAttempt(event: FormEvent) {
+    event.preventDefault();
+    const selectedPractice = practice;
+    if (!selectedPractice || attempt || pendingActions.current.has(`attempt:${selectedPractice.id}`)) return;
+    if (!output.trim()) { setPracticeError(selectedPractice.id, '请先写下你的解释、应用过程或成果。'); return; }
+    const id = selectedPractice.id;
+    const key = `attempt:${id}`;
+    pendingActions.current.add(key);
+    setPracticeAction(id, 'attempt'); setPracticeError(id, '');
+    try {
+      const saved = await api.attemptPractice(id, { output: output.trim(), assistanceLevel: 'none', evidenceRefs: evidenceRefInputs(selectedPractice.sourceRefs) });
+      if (!mounted.current) return;
+      adoptAttempt(saved);
+      if (dataRef.current?.practice?.id === saved.practiceId) setOutput(saved.output);
+      localStorage.removeItem(draftKey(saved.practiceId));
+      await requestFeedback(saved);
+    } catch (reason) {
+      if (mounted.current) setPracticeError(id, errorMessage(reason));
+    } finally {
+      pendingActions.current.delete(key);
+      if (mounted.current) setPracticeAction(id, null);
+    }
+  }
+
+  if (loading && !data) return <Loading label="正在读取今天的内容…" />;
+  if (!data) return <><PageHeader title="今天" /><ErrorState error={refreshError} retry={() => void refresh()} /></>;
+
+  const automation = data.automation;
+  const setup = setupEntry(automation);
+  const paused = data.profile.dailyBudgetMinutes === 0 && !practice;
+  const editorVisible = !!practice && !attempt;
+  const enablePrimary = !setup && !automation.enabled && !practice;
+  const hasIndependentPracticeTitle = !!practice && practice.title.trim().length > 0 && practice.title !== practice.goal && practice.title !== practice.prompt.slice(0, 60);
+  return <div className="mx-auto max-w-5xl">
+    <PageHeader eyebrow={data.date} title="今天" description="只看与当前目标相关的重点，以及一项练习。" />
+    <section aria-labelledby="automation-status" className="mb-10 border-l-2 border-accent pl-5 sm:pl-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div><h2 id="automation-status" className="text-lg">自动整理</h2><p role="status" className="mt-1 text-sm text-muted">{automation.message}</p></div>
+        {setup ? <Link to={setup.to} className={editorVisible ? 'btn-secondary' : 'btn-primary'}>{setup.label}<ArrowRight className="h-4 w-4" /></Link> : <Button variant={enablePrimary ? 'primary' : 'secondary'} onClick={toggleAutomation} disabled={automationBusy}>{automationBusy ? '正在保存…' : automation.enabled ? '停用自动整理' : '开启自动整理'}</Button>}
+      </div>
+    </section>
+    {refreshError && <div className="mb-6"><Notice tone="error">{refreshError} 已保留最近一次成功读取的内容。<div className="mt-2"><Button variant="secondary" onClick={() => void refresh()} disabled={inFlight.current}>重试读取</Button></div></Notice></div>}
+    {automationError && <div className="mb-6"><Notice tone="error">{automationError}</Notice></div>}
+    {actionError && <div className="mb-6"><Notice tone="error">{actionError}{attempt && !attempt.feedback && <div className="mt-2"><Button variant="secondary" onClick={() => void requestFeedback(attempt)} disabled={busy === 'feedback'}>{busy === 'feedback' ? '正在准备核对要点…' : '仅重试核对要点'}</Button></div>}</Notice></div>}
+
+    <Section title="与你目标相关的重点" description="最多展示三项；展开可核对来源。">
+      {data.highlights.length ? <div className="divide-y divide-line border-y border-line">{data.highlights.slice(0, 3).map((highlight) => <article key={highlight.id} className="py-6">
+        <p className="text-xs text-accent">{highlight.goal}</p><h3 className="mt-2 text-xl">{highlight.title}</h3><SafeText className="mt-2 text-muted">{highlight.summary}</SafeText><p className="mt-3 text-sm"><span className="text-muted">为什么相关：</span>{highlight.whyRelevant}</p>
+        <details className="mt-3"><summary className="cursor-pointer text-sm text-accent">查看来源</summary><div className="mt-3"><SourceRefs refs={highlight.sourceRefs} /></div></details>
+      </article>)}</div> : <EmptyState title="今天还没有可展示的重点" description="有值得回顾的内容时，会出现在这里" />}
+    </Section>
+
+    <Section title="今日练习" className="mt-12">
+      {practice ? <article>
+        {practice.skill && <p className="eyebrow">{practice.skill}</p>}{hasIndependentPracticeTitle && <h3 className="mt-2 text-2xl">{practice.title}</h3>}<SafeText className="mt-4">{practice.prompt}</SafeText>{practice.goal && <p className="mt-3 text-sm text-muted">目标：{practice.goal}</p>}
+        <details className="mt-4"><summary className="cursor-pointer text-sm text-accent">评价要点与来源</summary><div className="mt-4 grid gap-6 sm:grid-cols-2"><div><h4 className="mb-2 text-sm font-medium">评价要点</h4>{practice.rubric.length ? <ol className="space-y-3 text-sm text-muted">{practice.rubric.map((criterion) => <li key={criterion.id}><p className="font-medium text-ink">{criterion.label}</p><SafeText>{criterion.description}</SafeText>{criterion.expectedEvidence.length > 0 && <p className="text-xs">需要的证据：{criterion.expectedEvidence.join('、')}</p>}</li>)}</ol> : <p className="text-sm text-muted">未提供评价要点。</p>}</div><div><h4 className="mb-2 text-sm font-medium">来源</h4><SourceRefs refs={practice.sourceRefs} /></div></div></details>
+        {attempt ? <div className="mt-6 border-t border-line pt-6"><div className="flex items-center gap-2 text-accent"><Check className="h-5 w-5" aria-hidden="true" /><h4 className="font-medium">本次输出已保存</h4></div><SafeText className="mt-4 rounded-md bg-surface p-4">{attempt.output}</SafeText>{busy === 'feedback' && <p role="status" className="mt-3 text-sm text-muted">正在准备核对要点…</p>}{attempt.feedback ? <TemplateFeedback feedback={attempt.feedback} /> : busy !== 'feedback' && !actionError ? <p className="mt-3 text-sm text-muted">核对要点尚未准备好；已保存的输出不受影响。</p> : null}</div> : <form onSubmit={submitAttempt} className="mt-6"><Field label="你的输出" hint="草稿会自动保留。先用自己的话回答，再对照要点检查。"><Textarea className="min-h-56" value={output} onChange={(event) => { setOutput(event.target.value); localStorage.setItem(draftKey(practice.id), event.target.value); }} placeholder="用自己的话写下答案、过程或成果…" /></Field><Button type="submit" className="mt-4" disabled={busy === 'attempt' || !output.trim()}><Send className="h-4 w-4" />{busy === 'attempt' ? '正在保存…' : '保存输出'}</Button></form>}
+      </article> : <EmptyState title={paused ? '今日练习因预算暂停' : '今天还没有练习'} description={paused ? '每日预算为 0 分钟，因此没有生成练习。可在学习档案中调整预算。' : '相关重点准备好后，这里会安排一个练习'} action={paused ? <Link to="/settings#profile" className="btn-secondary">编辑时间预算</Link> : undefined} />}
+    </Section>
+    <p className="mt-12 border-t border-line pt-5 text-sm text-muted">模型整理的内容需要你结合原始来源核对事实。</p>
   </div>;
 }

@@ -11,6 +11,7 @@ export const FIELDS = {
   reviewSessions: ['id', 'projectId', 'deckId', 'limit', 'reviewedCount', 'status', 'pendingJobId', 'lastResponseId', 'createdAt', 'updatedAt'],
   reviewResponses: ['id', 'sessionId', 'presentationId', 'cardId', 'knowledgeId', 'rating', 'elapsedMs', 'operationId', 'status', 'committedAt', 'riffEvidence'],
   profileRevisions: ['id', 'profileRevision', 'values', 'changedAt', 'actor'],
+  focusArtifacts: ['id', 'date', 'timeZone', 'profileRevision', 'scopeRevision', 'modelConfigKey', 'highlights', 'practiceId', 'sourceDigests', 'provenance', 'generatedAt', 'revision', 'createdAt', 'updatedAt'],
 };
 
 export const SOURCE_FIELDS = ['sourceId', 'kind', 'externalId', 'title', 'url', 'threadId', 'messageId', 'documentId', 'blockId', 'excerpt', 'contentDigest', 'role', 'occurredAt', 'capturedAt', 'redacted'];

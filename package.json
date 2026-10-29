@@ -1,6 +1,6 @@
 {
   "name": "second-brain",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "本地个人项目知识与学习应用，使用独立 SiYuan 运行时保存已审核知识",
   "type": "module",
@@ -12,7 +12,7 @@
     "server": "node server/main.mjs",
     "build": "npm --prefix frontend run build",
     "test:packaging": "node --test scripts/*.test.mjs",
-    "test:backend": "node --test tests/backend/*.test.mjs",
+    "test:backend": "node --test --test-concurrency=1 tests/backend/*.test.mjs",
     "test:frontend": "npm --prefix frontend run test",
     "test": "npm run test:packaging && npm run test:backend && npm run test:frontend",
     "typecheck": "npm --prefix frontend run typecheck"

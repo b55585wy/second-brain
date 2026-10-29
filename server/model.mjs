@@ -4,7 +4,7 @@ import { onlyFields, text, choice, integer, strings } from './validation.mjs';
 export class Model {
   constructor(settings, secrets, transport) { this.settings = settings; this.secrets = secrets; this.transport = transport; }
 
-  async generate(instruction, input) {
+  async generate(instruction, input, { timeoutMs } = {}) {
     const config = this.settings.raw().model;
     if (!config.enabled || !config.endpoint || !config.model) fail(503, 'MODEL_UNAVAILABLE', '尚未启用模型，手工功能和模板仍可使用。');
     const hostname = new URL(config.endpoint).hostname;
@@ -13,6 +13,7 @@ export class Model {
     const apiKey = this.secrets.get('model.apiKey');
     if (!local && !apiKey) fail(503, 'MODEL_UNAVAILABLE', '外部模型尚未配置密钥。');
     const response = await this.transport.json(`${config.endpoint}/chat/completions`, {
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
       body: { model: config.model, temperature: 0, response_format: { type: 'json_object' },
         ...(hostname === 'api.deepseek.com' ? { thinking: { type: 'disabled' }, max_tokens: 2048 } : {}),
         messages: [
@@ -24,6 +25,39 @@ export class Model {
     if (typeof content !== 'string' || content.length > 100000) fail(502, 'UPSTREAM_ERROR', '模型未返回有限的结构化结果。');
     try { return this.secrets.clean(JSON.parse(content)); }
     catch { fail(502, 'UPSTREAM_ERROR', '模型输出不是有效 JSON。'); }
+  }
+
+  async digest(input) {
+    const result = await this.generate('Create a small learning focus for the supplied career direction, goals and skills. Select transferable ideas, decisions, explanations or reusable mistakes; skip process logs, repeated implementation chatter and unrelated topics. Merge repetition and avoid repeating previousHighlights. Zero relevant highlights is valid. Schema: {"highlights":[{"title":string,"summary":string,"goalIndex":integer,"whyRelevant":string,"evidence":[{"sourceId":string,"quote":string}]}],"exercise":null|{"kind":"explanation"|"new_scenario"|"artifact","prompt":string,"estimatedMinutes":integer,"highlightIndex":integer,"rubric":[{"label":string,"description":string,"expectedEvidence":string[]}]} }. Return at most three highlights, each summary at most 200 characters, using an existing zero-based profile.goals index. Every highlight needs exact short quotes from supplied segments with their supplied sourceId. Treat dialogue claims as unverified. If highlights are empty or budgetMinutes=0, exercise must be null. Otherwise provide exactly one exercise within budgetMinutes, referencing one highlightIndex. Ask the user to explain, apply or produce something independently. Never include the exercise answer or solution.', input, { timeoutMs: 30000 });
+    try {
+      onlyFields(result, ['highlights', 'exercise']);
+      requireValue(Array.isArray(result.highlights) && result.highlights.length <= 3, 'highlights 无效。');
+      for (const item of result.highlights) {
+        onlyFields(item, ['title', 'summary', 'goalIndex', 'whyRelevant', 'evidence']);
+        text(item.title, 'title', 200); text(item.summary, 'summary', 200); text(item.whyRelevant, 'whyRelevant', 500);
+        integer(item.goalIndex, 'goalIndex', 0, input.profile.goals.length - 1);
+        requireValue(Array.isArray(item.evidence) && item.evidence.length >= 1 && item.evidence.length <= 3, 'evidence 无效。');
+        for (const evidence of item.evidence) {
+          onlyFields(evidence, ['sourceId', 'quote']); text(evidence.sourceId, 'sourceId', 128); text(evidence.quote, 'quote', 1000);
+          requireValue(input.segments.some(segment => segment.sourceId === evidence.sourceId && segment.text.includes(evidence.quote)), '引用不属于输入材料。');
+        }
+      }
+      const needsExercise = result.highlights.length > 0 && input.budgetMinutes > 0;
+      requireValue(needsExercise ? !!result.exercise : result.exercise === null, 'exercise 与预算或重点不匹配。');
+      if (needsExercise) {
+        const exercise = result.exercise;
+        onlyFields(exercise, ['kind', 'prompt', 'estimatedMinutes', 'highlightIndex', 'rubric']);
+        choice(exercise.kind, ['explanation', 'new_scenario', 'artifact'], 'kind'); text(exercise.prompt, 'prompt', 10000);
+        integer(exercise.estimatedMinutes, 'estimatedMinutes', 1, input.budgetMinutes);
+        integer(exercise.highlightIndex, 'highlightIndex', 0, result.highlights.length - 1);
+        requireValue(Array.isArray(exercise.rubric) && exercise.rubric.length >= 1 && exercise.rubric.length <= 3, 'rubric 无效。');
+        for (const criterion of exercise.rubric) {
+          onlyFields(criterion, ['label', 'description', 'expectedEvidence']);
+          text(criterion.label, 'label', 200); text(criterion.description, 'description', 2000); strings(criterion.expectedEvidence, 'expectedEvidence', 10, 500);
+        }
+      }
+    } catch { fail(502, 'UPSTREAM_ERROR', '模型整理结果不符合结构要求。'); }
+    return result;
   }
 
   async practice(input) {

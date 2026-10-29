@@ -53,3 +53,7 @@ Targeted verification: `node.exe --test tests/backend/credentials-acl.test.mjs t
 ## Collector continuation verification, 2026-10-28
 
 The complete current suite passed **257/257**, with no skips, in a source-only disposable copy using `node --test --test-concurrency=1 tests/backend/*.test.mjs`. This includes 26 continuation scenarios and 7 filesystem-isolation scenarios. Frontend63, packaging35, typecheck/build, and 9 synthetic browser integration scenarios also passed. Production database and credential hashes remained unchanged throughout these checks. See [the bounded real collection result and verification limits](../../docs/COLLECTOR-CONTINUATION-VERIFICATION-20261028.md).
+
+## Automatic learning verification, 2026-10-29
+
+The current complete backend passed **333/333**, no skips, in a source-only disposable copy with test concurrency 1. [Automatic-learning scenarios](AUTOMATION-SCENARIOS.md) cover permission receipts, bounded source fragments, goal-grounded model output, stable daily focus/practice, cross-day coverage without extra model requests, persistent cost reservations, one connection-only short recovery, revision guards, old scheduler transitions, and backward-compatible backups. Full frontend114, packaging35 and browser8 also passed; see [0.2 verification](../../docs/SIMPLE-VERIFICATION-20261029.md).

@@ -47,13 +47,13 @@ export class Transport {
     this.timeoutMs = timeoutMs;
   }
 
-  async json(url, { method = 'POST', body, headers = {}, readOnly = false } = {}) {
+  async json(url, { method = 'POST', body, headers = {}, readOnly = false, timeoutMs = this.timeoutMs } = {}) {
     const attempts = readOnly ? 2 : 1;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
         const response = await this.fetch(url, {
           method, redirect: 'error', headers: { 'Content-Type': 'application/json', ...headers },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(this.timeoutMs),
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(timeoutMs),
         });
         if (response.status === 401) fail(401, 'UPSTREAM_UNAUTHORIZED', '上游凭据失效或未授权。');
         if (response.status === 403) fail(403, 'UPSTREAM_FORBIDDEN', '上游未授予该文档或操作的权限。');

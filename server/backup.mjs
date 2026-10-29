@@ -9,6 +9,7 @@ const KINDS = {
   profileRevisions: 'profile-revision', projects: 'project', checkpoints: 'checkpoint', sources: 'source', knowledge: 'knowledge',
   practices: 'practice', attempts: 'attempt', feedback: 'feedback', outputs: 'output', plans: 'daily-plan',
   reviewSessions: 'review-session', reviewResponses: 'review-response', jobHistory: 'job-history',
+  focusArtifacts: 'focus-artifact',
 };
 const JOB_FIELDS = ['id', 'type', 'trigger', 'status', 'commitState', 'operationId', 'progress', 'createdAt', 'updatedAt', 'finishedAt', 'error'];
 const canonical = value => JSON.stringify(normalize(value));
@@ -92,6 +93,7 @@ export class Backup {
     const add = (kind, recordId) => { if (recordId) result.push([kind, recordId]); };
     add('projects', record.projectId);
     if (entity === 'attempts' || entity === 'outputs') add('practices', record.practiceId);
+    if (entity === 'focusArtifacts') add('practices', record.practiceId);
     if (entity === 'feedback') add('attempts', record.attemptId);
     if (entity === 'reviewResponses') { add('reviewSessions', record.sessionId); add('knowledge', record.knowledgeId); }
     const visit = value => {
@@ -136,6 +138,7 @@ export class Backup {
     onlyFields(document, ['schemaVersion', 'productVersion', 'exportedAt', 'sourceContentIncluded', 'redactionCount', 'data']);
     if (document.schemaVersion !== EXPORT_SCHEMA) fail(422, 'IMPORT_SCHEMA_UNSUPPORTED', '不支持此备份版本。');
     onlyFields(document.data, ['profile', ...Object.keys(KINDS)]);
+    if (!Object.hasOwn(document.data, 'focusArtifacts')) document = { ...document, data: { ...document.data, focusArtifacts: [] } };
     requireValue(Object.keys(document.data).length === 1 + Object.keys(KINDS).length, '备份缺少必要集合。');
     this.size(document);
     const profile = document.data.profile;
@@ -183,20 +186,23 @@ export class Backup {
         }
       }
     }
+    return document;
   }
 
   import(body) {
     onlyFields(body, ['document', 'mode', 'applyProfile', 'expectedProfileRevision']);
     requireValue(body.mode === 'merge', '导入仅支持 merge。');
     requireValue(body.applyProfile === undefined || typeof body.applyProfile === 'boolean', 'applyProfile 必须为布尔值。');
-    this.validate(body.document);
+    const document = this.validate(body.document);
     if (body.applyProfile) expectedRevision(body.expectedProfileRevision, this.domain.profile());
-    const data = this.secrets.clean(body.document.data);
+    const data = this.secrets.clean(document.data);
     const report = { id: id(), schemaVersion: EXPORT_SCHEMA, importedAt: now(), counts: Object.fromEntries(['profile', ...Object.keys(KINDS)].map(key => [key, { inserted: 0, skipped: 0, conflicted: 0 }])),
       conflictTotal: 0, conflicts: [], needsRecheck: 0, profileApplied: false, notices: [] };
     const auditKey = digest([body.document, body.applyProfile ?? false]);
     const knownAudit = this.store.get('import-audit', auditKey);
     if (knownAudit) {
+      const automation = this.store.get('config', 'learning-automation');
+      if (automation?.enabled) this.store.put('config', { ...automation, enabled: false }, 'learning-automation');
       for (const [entity, records] of Object.entries(data)) report.counts[entity].skipped = Array.isArray(records) ? records.length : 1;
       return report;
     }
@@ -205,6 +211,8 @@ export class Backup {
       if (report.conflicts.length < 100) report.conflicts.push({ entity, id: recordId, reason });
     };
     return this.store.transaction(() => {
+      const automation = this.store.get('config', 'learning-automation');
+      if (automation?.enabled) this.store.put('config', { ...automation, enabled: false }, 'learning-automation');
       const profileMap = new Map();
       if (body.applyProfile) {
         for (const record of [...data.profileRevisions].sort((a, b) => a.profileRevision - b.profileRevision)) {
@@ -283,6 +291,7 @@ export class Backup {
       if (record.status === 'accepted') { record.status = 'needs_recheck'; report.needsRecheck++; }
       record.origin = 'backup'; record.siyuanBlockId = null; record.sync = { ...NOT_SYNCED };
     }
+    if (entity === 'focusArtifacts') { record.scopeRevision = null; record.modelConfigKey = null; }
     if (entity === 'reviewSessions') { record.status = 'blocked'; record.pendingJobId = null; record.presentationId = null; }
     if (entity === 'plans') { if (record.status !== 'completed') record.status = 'stale'; record.generationJobId = null; }
     if (entity === 'attempts') { record.feedback = null; delete record.latestFeedbackId; }

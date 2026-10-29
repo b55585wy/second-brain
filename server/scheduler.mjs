@@ -1,8 +1,8 @@
 import { dateInZone, digest } from './validation.mjs';
 
 export class Scheduler {
-  constructor(store, settings, domain, learning, collector, jobs) {
-    Object.assign(this, { store, settings, domain, learning, collector, jobs });
+  constructor(store, settings, domain, learning, collector, jobs, automation = null) {
+    Object.assign(this, { store, settings, domain, learning, collector, jobs, automation });
     this.startedAt = Date.now();
   }
 
@@ -15,6 +15,7 @@ export class Scheduler {
   stop() { clearInterval(this.timer); }
 
   tick(clock = new Date()) {
+    this.automation?.tick(clock);
     const config = this.settings.raw();
     const scheduler = config.scheduler;
     if (!scheduler.enabled) return;
@@ -35,7 +36,7 @@ export class Scheduler {
         return this.jobs.enqueue('daily_plan_generate', payload, `scheduler_${digest(['plan', date, zone]).slice(0, 48)}`, `plan:${date}:${zone}`);
       });
     }
-    if (scheduler.codexSyncEnabled) {
+    if (scheduler.codexSyncEnabled && !this.automation?.config().enabled) {
       const interval = scheduler.codexSyncIntervalMinutes * 60000;
       const slotTime = Math.floor(+clock / interval) * interval;
       const timely = +clock - slotTime < 15000 || scheduler.catchUpEnabled;

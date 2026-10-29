@@ -170,7 +170,7 @@ describe('Codex 授权与同步', () => {
     vi.mocked(api.saveCodexScope).mockImplementation(async (input) => ({ ...input, revision: 2 }));
     render(<CodexPage />);
     await user.click(screen.getByText('高级设置'));
-    const enabled = await screen.findByRole('checkbox', { name: '启用自动采集' });
+    const enabled = await screen.findByRole('checkbox', { name: '允许读取已选对话' });
     await user.click(enabled);
     await user.clear(screen.getByLabelText('授权线程 ID（每行一条）'));
     await user.click(screen.getByRole('button', { name: '保存采集范围' }));

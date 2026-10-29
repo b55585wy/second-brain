@@ -1,4 +1,4 @@
-import type { Connection, DailyPlan, Dashboard, Feedback, Job, Knowledge, LearningProfile, ListData, Practice, PracticeAttempt, ReviewAnswer, ReviewPrompt, SourceRef } from '../types';
+import type { Automation, Connection, DailyPlan, Dashboard, Feedback, Job, Knowledge, LearningProfile, ListData, Practice, PracticeAttempt, ReviewAnswer, ReviewPrompt, SourceRef, TodayData, TodayHighlight } from '../types';
 
 type RecordValue = Record<string, unknown>;
 
@@ -225,4 +225,46 @@ export function normalizeAttempt(value: unknown): PracticeAttempt {
     evidenceRefs: Array.isArray(attempt.evidenceRefs) ? attempt.evidenceRefs as PracticeAttempt['evidenceRefs'] : [],
     feedback: attempt.feedback ? record(attempt.feedback) as unknown as Feedback : null,
   } as PracticeAttempt;
+}
+
+export function normalizeAutomation(value: unknown): Automation {
+  const item = record(value);
+  const setup = record(item.setup);
+  const lastError = item.lastError === null ? null : record(item.lastError);
+  return {
+    enabled: item.enabled === true,
+    revision: revision(item.revision),
+    state: text(item.state, 'off') as Automation['state'],
+    message: text(item.message),
+    setup: { profile: setup.profile === true, scope: setup.scope === true, model: setup.model === true },
+    dailyCallLimit: 3,
+    callsToday: typeof item.callsToday === 'number' ? item.callsToday : 0,
+    nextRunAt: typeof item.nextRunAt === 'string' ? item.nextRunAt : null,
+    lastSuccessAt: typeof item.lastSuccessAt === 'string' ? item.lastSuccessAt : null,
+    lastError: lastError ? { code: text(lastError.code), message: text(lastError.message), retryable: lastError.retryable === true } : null,
+  };
+}
+
+export function normalizeToday(value: unknown): TodayData {
+  const item = record(value);
+  const highlights = Array.isArray(item.highlights) ? item.highlights.map((value): TodayHighlight => {
+    const highlight = record(value);
+    return {
+      id: text(highlight.id),
+      title: text(highlight.title),
+      summary: text(highlight.summary),
+      goal: text(highlight.goal),
+      whyRelevant: text(highlight.whyRelevant),
+      sourceRefs: sourceRefs(highlight.sourceRefs),
+    };
+  }) : [];
+  return {
+    date: text(item.date),
+    profile: normalizeProfile(item.profile),
+    automation: normalizeAutomation(item.automation),
+    highlights,
+    practice: item.practice ? normalizePractice(item.practice) : null,
+    attempt: item.attempt ? normalizeAttempt(item.attempt) : null,
+    generatedAt: typeof item.generatedAt === 'string' ? item.generatedAt : null,
+  };
 }

@@ -11,7 +11,7 @@ const read = file => readFileSync(resolve(PROJECT_ROOT, file), 'utf8');
 test('root package routes commands to real entry points and suites', () => {
   const pkg = JSON.parse(read('package.json'));
   const frontend = JSON.parse(read('frontend/package.json'));
-  assert.equal(pkg.version, '0.1.0');
+  assert.equal(pkg.version, '0.2.0');
   assert.equal(pkg.private, true);
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.engines.node, '>=24.22.0');
@@ -21,7 +21,7 @@ test('root package routes commands to real entry points and suites', () => {
   assert.equal(pkg.scripts.typecheck, 'npm --prefix frontend run typecheck');
   assert.equal(pkg.scripts['test:frontend'], 'npm --prefix frontend run test');
   for (const name of ['build', 'typecheck', 'test']) assert.ok(frontend.scripts[name]);
-  assert.equal(pkg.scripts['test:backend'], 'node --test tests/backend/*.test.mjs');
+  assert.equal(pkg.scripts['test:backend'], 'node --test --test-concurrency=1 tests/backend/*.test.mjs');
   assert.equal(pkg.scripts.test, 'npm run test:packaging && npm run test:backend && npm run test:frontend');
   assert.doesNotMatch(JSON.stringify(pkg.scripts), /BOOTSTRAP_ONLY/);
 });

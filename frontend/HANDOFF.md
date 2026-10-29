@@ -9,6 +9,17 @@
 - 单元与真实 API 合约测试：`src/pages/*.test.tsx`、`src/services/api.test.ts`、`src/services/api.contract.test.ts`
 - 详细场景与当前状态边界：`README.md`
 
+## 飞书学习首步设置
+
+网页绑定区使用只读 `GET /feishu-chat/entry` 展示当前应用的官方私聊链接与折叠手机二维码，已绑定也可使用。入口失败局部显示并保留提醒草稿，刷新清除旧入口，注册后重新读取，不增加写请求或轮询。Codex 集成验证完整前端174、后端399、打包35及合成浏览器10通过；详见 [当前验收](../docs/FEISHU-VERIFICATION-20261029.md)。
+
+- 独立组件 `src/components/FeishuChatSettings.tsx` 使用 `GET/PUT /feishu-chat`、显式 `POST /pair` 与 `POST /send-today`；聊天修订独立，请求体严格限定任务字段。状态读取失败局部展示，刷新与失败保留提醒勾选和时间草稿，同时采用服务端最新 enabled；较低修订 GET 不撤销更新成功。StrictMode 和显式刷新不重叠 GET，卸载清理读取与过期计时器。
+- `src/components/FeishuRegistration.tsx` 实现无应用时的首要“扫码连接飞书”：挂载仅 GET，显式 POST 防重复，starting/waiting 每次 GET 完成或拒绝后间隔 2 秒非重叠续读，卸载清理；重新打开 waiting 不自动 POST。原样展示授权 URL 与后端 qrDataUrl，轮询失败保留 QR、状态和错误直到恢复，覆盖完成、错误、过期和显式重试，不自动重建。完成（包括初始 complete）每次挂载只刷新一次聊天与 Settings，不循环；Settings 原地更新，不卸载扫码组件。授权完成不冒充已连接，并提示可能仍需发布应用或管理员审核。
+- 未配置时保留既有 `#feishu` App ID/App Secret 高级手工入口，直接 hash 与 hash 导航均展开；未复制秘密或接收人表单。旧设置的完整三对象保存、秘密清除、文档来源和 scheduler 行为不变。Today、导航及其他旧功能未修改。
+- 绑定码显示私聊指令、到期时间和过期重试，不自动换码；外部绑定只通过显式只读刷新反映，不自动发送。发送按钮严格受 enabled/bound/connected/pending 限制；发送结果在无练习回退前区分 completed、alreadySent/sent、queued/pending/sending、uncertain、failed/cancelled。uncertain 后禁止重复发送并提供网页 Today 入口，刷新不恢复发送或自动 POST。聊天 DTO 接受可选 state/lastError/snoozedUntil/pendingMessages，未暴露未验证调试字段。
+- `AssistanceLevel` 新增 `unknown`，现有归一化原样保留；手工输出默认值未改。新增扫码生命周期、初始/恢复完成刷新、发送兼容、提醒草稿/enabled 和修订竞争测试，并扩展 Settings/API 测试。
+- 隔离验证：`npm.cmd test -- --exclude src/services/api.contract.test.ts` 为 11 个测试文件、173 个测试全部通过；`npm.cmd run typecheck`、`npm.cmd run build`、`git diff --check -- frontend` 通过。按要求未运行后端合约测试，未启动后端或浏览器，未做真实外部调用、截图式视觉验证或依赖安装；集成浏览器验收由协调方执行。
+
 ## Round 3：Today 成功响应权威替换
 
 - 每次 `api.today` 成功都原样采用响应的 `highlights` 和 `practice`，包括 `[]` 与 `null`，不再按 collecting/organizing/waiting/limited/error 从旧显示内容回退。请求 pending 或 rejected 时没有成功替换，继续保留当前显示；旧 focus 仍有效时由服务端显式返回并继续展示。

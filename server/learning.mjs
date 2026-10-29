@@ -186,7 +186,7 @@ export class Learning {
     onlyFields(body, ['output', 'assistanceLevel', 'evidenceRefs']);
     const practice = this.store.require('practice', practiceId);
     const evidenceRefs = this.sources.evidence(body.evidenceRefs);
-    const fields = { practiceId, output: text(body.output, 'output', 100000), assistanceLevel: choice(body.assistanceLevel, ['none', 'hint', 'partial', 'full'], 'assistanceLevel'),
+    const fields = { practiceId, output: text(body.output, 'output', 100000), assistanceLevel: choice(body.assistanceLevel, ['none', 'hint', 'partial', 'full', 'unknown'], 'assistanceLevel'),
       evidenceRefs, evidenceSnapshots: this.snapshots(evidenceRefs), submittedAt: now(), feedback: null };
     const attempt = this.store.put('attempt', this.sources.secrets.clean(fields));
     this.store.put('practice', { ...practice, status: 'completed' });

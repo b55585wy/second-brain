@@ -130,7 +130,7 @@ export function validateEntity(entity, value) {
       choice(value.kind, ['explanation', 'new_scenario', 'artifact'], 'kind'); choice(value.status, ['open', 'completed'], 'status'); text(value.goal, 'goal', 500); text(value.skill, 'skill', 500, true); text(value.prompt, 'prompt', 10000);
       integer(value.estimatedMinutes, 'estimatedMinutes', 1, 120); requireValue(value.rubric?.length >= 1, 'rubric 不能为空。'); array(value.rubric, rubric, 10); requireValue(new Set(value.rubric.map(item => item.id)).size === value.rubric.length, 'rubric 身份重复。'); provenance(value.provenance); break;
     case 'attempts': {
-      localId(value.practiceId); text(value.output, 'output', 100000); choice(value.assistanceLevel, ['none', 'hint', 'partial', 'full'], 'assistanceLevel'); instant(value.submittedAt); nullable(value.latestFeedbackId, localId);
+      localId(value.practiceId); text(value.output, 'output', 100000); choice(value.assistanceLevel, ['none', 'hint', 'partial', 'full', 'unknown'], 'assistanceLevel'); instant(value.submittedAt); nullable(value.latestFeedbackId, localId);
       let bytes = 0;
       array(value.evidenceSnapshots, item => { shape(item, ['reference', 'revision', 'digest', 'text', 'capturedAt']); evidence(item.reference); nullable(item.revision, revision); nullable(item.digest, hash); nullable(item.text, content => { text(content, 'snapshot text', 20000, true); bytes += Buffer.byteLength(content); }); instant(item.capturedAt); }, 50);
       requireValue(bytes <= 1024 * 1024, '证据快照过大。'); break;

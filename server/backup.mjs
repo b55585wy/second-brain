@@ -178,7 +178,7 @@ export class Backup {
           requireValue(['draft', 'accepted', 'rejected', 'needs_recheck', 'archived'].includes(record.status), '备份知识状态无效。');
         }
         if (entity === 'outputs') { text(record.title, 'title', 200); text(record.content, 'content', 100000, record.status === 'draft'); requireValue(['draft', 'final'].includes(record.status), '备份输出状态无效。'); }
-        if (entity === 'attempts') { text(record.output, 'output', 100000); requireValue(['none', 'hint', 'partial', 'full'].includes(record.assistanceLevel), '备份辅助程度无效。'); }
+        if (entity === 'attempts') { text(record.output, 'output', 100000); requireValue(['none', 'hint', 'partial', 'full', 'unknown'].includes(record.assistanceLevel), '备份辅助程度无效。'); }
         if (entity === 'plans') { dateString(record.date); timeZone(record.timeZone); requireValue(Array.isArray(record.items), '备份计划无效。'); }
         if (entity === 'sources') {
           requireValue(['codex', 'manual_dialogue', 'siyuan', 'feishu', 'manual'].includes(record.kind) && /^[a-f0-9]{64}$/.test(record.contentDigest), '备份来源无效。');

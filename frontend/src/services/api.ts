@@ -1,6 +1,6 @@
 import type {
-  CodexScope, CodexScopeInput, CodexThread, EvidenceRef, ExportArtifact, Feedback,
-  Job, JobAck, LearningProfile, LearningProfileInput, ListData, ManualDialogueInput,
+  CodexScope, CodexScopeInput, CodexThread, EvidenceRef, ExportArtifact, Feedback, FeishuChatEntry, FeishuChatInput, FeishuChatPair,
+  FeishuChatSendToday, FeishuChatStatus, FeishuRegistrationStatus, Job, JobAck, LearningProfile, LearningProfileInput, ListData, ManualDialogueInput,
   Output, OutputInput, PracticeAttempt, Project, ReviewSession, Settings, SettingsInput,
   SiyuanInput, SourceRef, SourceRefInput,
 } from '../types';
@@ -52,7 +52,7 @@ function rememberRecords(path: string, value: unknown): void {
 
 function captureRevisions(path: string, value: unknown): void {
   const pathname = path.split('?')[0];
-  if (['/learning-profile', '/settings', '/connections/codex/scope', '/daily-plan', '/automation'].includes(pathname)) remember(pathname, value);
+  if (['/learning-profile', '/settings', '/connections/codex/scope', '/daily-plan', '/automation', '/feishu-chat'].includes(pathname)) remember(pathname, value);
   if (pathname === '/today' && isFields(value)) {
     remember('/learning-profile', value.profile);
     remember('/automation', value.automation);
@@ -257,6 +257,13 @@ export const api = {
   notebooks: () => get<ListData<{ id: string; name: string }>>('/siyuan/notebooks'),
   settings: () => get<Settings>('/settings'),
   saveSettings: (body: SettingsInput, revision?: number) => put<Settings>('/settings', versioned('/settings', body, revision)),
+  feishuChat: () => get<FeishuChatStatus>('/feishu-chat'),
+  feishuChatEntry: () => get<FeishuChatEntry>('/feishu-chat/entry'),
+  feishuRegistration: () => get<FeishuRegistrationStatus>('/feishu-chat/registration'),
+  startFeishuRegistration: (id = operationId()) => post<FeishuRegistrationStatus>('/feishu-chat/registration', { operationId: id }),
+  saveFeishuChat: (body: FeishuChatInput, revision: number, id = operationId()) => put<FeishuChatStatus>('/feishu-chat', { operationId: id, expectedRevision: revision, enabled: body.enabled, remindersEnabled: body.remindersEnabled, reminderLocalTime: body.reminderLocalTime }),
+  pairFeishuChat: (id = operationId()) => post<FeishuChatPair>('/feishu-chat/pair', { operationId: id }),
+  sendFeishuToday: (id = operationId()) => post<FeishuChatSendToday>('/feishu-chat/send-today', { operationId: id }),
   exportDownload: async (scope: 'all' | 'projects' = 'all', projectIds: string[] = []) => {
     const artifact = await post<ExportArtifact>('/exports', { scope, projectIds, includeSourceContent: false });
     assertSafeExport(artifact);

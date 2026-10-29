@@ -680,7 +680,7 @@ review 项必须来自当前经兼容 Riff API 读取的真实到期集合，rev
 
 Rubric 每项 label 为 1..200，description 为 1..2000，expectedEvidence 为 0..10 个非空字符串（每项 <=500）；由服务端生成 criterion ID。模板/模型练习必须保存 rubric、来源、具体目标与生成方式。手动创建可完全无密钥，goal 必须是用户明确输入；不能从 careerDirection 自动补造职业。
 
-Attempt.output 为 1..100000，assistanceLevel 必填：none=独立完成，hint=只用提示，partial=借助部分内容，full=主要依赖给定答案/生成内容。四者均可提交，呈现时保持区分，不把 full 当独立证据。Attempt 不可修改，重做产生新 attempt；首次有效提交使 practice status 从 open→completed，后续允许再尝试，不改写过去输出。不存在练习/尝试为 404。
+Attempt.output 为 1..100000，assistanceLevel 必填：none=独立完成，hint=只用提示，partial=借助部分内容，full=主要依赖给定答案/生成内容，unknown=未说明帮助程度。呈现时保持区分，不把 full 或 unknown 当独立证据；旧值和旧备份继续可用。Attempt 不可修改，重做产生新 attempt；首次有效提交使 practice status 从 open→completed，后续允许再尝试，不改写过去输出。不存在练习/尝试为 404。
 
 提交时对已有 source/output 证据保存脱敏快照和 digest/revision，每个 text 最多 20000 字符、总快照上限 1 MiB；超限明确 413，不偷偷以完整证据标签截断。URL 引用不自动抓取，text/digest/revision=null；必须在反馈中标明未检查该 URL 内容。写作后续修改不会改变过去尝试证据。feedback 以该次 output、assistanceLevel、rubric 和快照为依据。
 

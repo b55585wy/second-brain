@@ -1,5 +1,6 @@
 import { api } from './api';
-import type { SettingsInput } from '../types';
+import { normalizeAttempt } from './adapters';
+import type { AssistanceLevel, SettingsInput } from '../types';
 
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -142,5 +143,74 @@ describe('Today 与自动化线协议', () => {
     await api.saveProfile(input);
     expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/learning-profile');
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ ...input, expectedRevision: 41, operationId: expect.any(String) });
+  });
+});
+
+describe('飞书学习固定线协议', () => {
+  const rawStatus = {
+    enabled: true,
+    revision: 17,
+    remindersEnabled: true,
+    reminderLocalTime: '20:30',
+    bound: true,
+    configured: true,
+    lastReceivedAt: null,
+    lastSentAt: null,
+    state: 'ready',
+    lastError: null,
+    snoozedUntil: null,
+    pendingMessages: [{ opaque: 'synthetic' }],
+    connection: { state: 'connected', message: '已连接', lastError: null },
+  };
+
+  it('GET 只读并返回原始 FeishuChatStatus', async () => {
+    const fetchMock = mockFetch({ data: rawStatus });
+    await expect(api.feishuChat()).resolves.toEqual(rawStatus);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/feishu-chat', expect.objectContaining({ method: 'GET', body: undefined }));
+  });
+
+  it('entry GET 只读，无 body 或 operationId，并返回服务端原始入口', async () => {
+    const entry = { url: 'https://applink.feishu.cn/client/bot/open?appId=cli_synthetic', qrDataUrl: 'data:image/png;base64,SYNTHETIC' };
+    const fetchMock = mockFetch({ data: entry });
+    await expect(api.feishuChatEntry()).resolves.toEqual(entry);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/feishu-chat/entry', expect.objectContaining({ method: 'GET', body: undefined }));
+    expect(fetchMock.mock.calls[0][1].body).toBeUndefined();
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty('Content-Type');
+  });
+
+  it('registration GET 只读，显式 POST body 只有 operationId', async () => {
+    const registration = { state: 'waiting', url: 'https://example.test/auth', qrDataUrl: 'data:image/png;base64,SYNTHETIC', expiresAt: '2099-01-01T00:00:00.000Z', message: '请扫码', error: null };
+    const fetchMock = mockFetch({ data: registration });
+    await expect(api.feishuRegistration()).resolves.toEqual(registration);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/feishu-chat/registration', expect.objectContaining({ method: 'GET', body: undefined }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: registration }));
+    await expect(api.startFeishuRegistration('operation-registration')).resolves.toEqual(registration);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/v1/feishu-chat/registration', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ operationId: 'operation-registration' });
+  });
+
+  it('PUT 只发送 operationId、独立 expectedRevision 和三个配置字段', async () => {
+    const fetchMock = mockFetch({ data: rawStatus });
+    await api.saveFeishuChat({ enabled: true, remindersEnabled: true, reminderLocalTime: '20:30' }, 16, 'operation-chat-save');
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/feishu-chat', expect.objectContaining({ method: 'PUT' }));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ operationId: 'operation-chat-save', expectedRevision: 16, enabled: true, remindersEnabled: true, reminderLocalTime: '20:30' });
+  });
+
+  it('pair 与 send-today 的 POST body 各自只有 operationId', async () => {
+    let fetchMock = mockFetch({ data: { code: 'TEST42', expiresAt: '2026-10-29T12:00:00.000Z' } });
+    await expect(api.pairFeishuChat('operation-pair')).resolves.toEqual({ code: 'TEST42', expiresAt: '2026-10-29T12:00:00.000Z' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/feishu-chat/pair', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ operationId: 'operation-pair' });
+    fetchMock = mockFetch({ data: { queued: true, alreadySent: false, practiceId: 'practice-synthetic' } });
+    await expect(api.sendFeishuToday('operation-send')).resolves.toEqual({ queued: true, alreadySent: false, practiceId: 'practice-synthetic' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/feishu-chat/send-today', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ operationId: 'operation-send' });
+  });
+
+  it('现有归一化保留类型有效的 unknown 辅助程度', () => {
+    const incoming: AssistanceLevel = 'unknown';
+    const normalized = normalizeAttempt({ id: 'attempt-synthetic', practiceId: 'practice-synthetic', output: '合成输出', assistanceLevel: incoming, evidenceRefs: [] });
+    expect(normalized.assistanceLevel).toBe('unknown');
   });
 });

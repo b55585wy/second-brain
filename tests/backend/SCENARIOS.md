@@ -1,5 +1,7 @@
 # Backend requirement scenarios
 
+0.3.0 complete verification: **399/399 passed**, no skips, in a source-only copy with concurrency 1. Feishu requirements additionally cover [chat, delivery and answer scenarios](FEISHU-CHAT-SCENARIOS.md), registration preparation/expiry/cancellation, HTTP and SDK contracts, connection generations and explicit-off intent. Root frontend174, Kimi frontend173, packaging35 and synthetic browser10 passed; see [verification](../../docs/FEISHU-VERIFICATION-20261029.md).
+
 All tests use isolated databases and fake upstreams. They must never write real SiYuan notes or collect real conversation history.
 
 The shared helper resolves every database and credential path before constructing an application. All paths must be strictly inside the physical `tests/backend/.scratch` directory; empty, relative, production and symlink/junction paths are rejected. Cleanup applies the same boundary checks. Validate changes to this boundary in a source-only disposable copy before running database tests.

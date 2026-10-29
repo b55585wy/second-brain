@@ -223,7 +223,7 @@ export interface Practice extends Versioned {
   selectionReason?: string;
 }
 
-export type AssistanceLevel = 'none' | 'hint' | 'partial' | 'full';
+export type AssistanceLevel = 'none' | 'hint' | 'partial' | 'full' | 'unknown';
 
 export interface PracticeAttempt {
   id: ID;
@@ -291,6 +291,50 @@ export interface Connection {
   notebookTitle?: string;
   tokenConfigured?: boolean;
   configurationSource?: string;
+}
+
+export type FeishuChatConnectionState = 'off' | 'setup' | 'connecting' | 'connected' | 'error';
+
+export interface FeishuChatStatus {
+  enabled: boolean;
+  revision: number;
+  remindersEnabled: boolean;
+  reminderLocalTime: string;
+  bound: boolean;
+  configured: boolean;
+  lastReceivedAt: string | null;
+  lastSentAt: string | null;
+  state?: string;
+  lastError?: { code: string; message: string; retryable: boolean } | null;
+  snoozedUntil?: string | null;
+  pendingMessages?: unknown;
+  connection: {
+    state: FeishuChatConnectionState;
+    message: string;
+    lastError: { code: string; message: string; retryable: boolean } | null;
+  };
+}
+
+export type FeishuChatInput = Pick<FeishuChatStatus, 'enabled' | 'remindersEnabled' | 'reminderLocalTime'>;
+export interface FeishuChatEntry {
+  url: string | null;
+  qrDataUrl: string | null;
+}
+export interface FeishuRegistrationStatus {
+  state: 'idle' | 'starting' | 'waiting' | 'complete' | 'error';
+  url: string | null;
+  qrDataUrl: string | null;
+  expiresAt: string | null;
+  message: string;
+  error: { code: string; message: string; retryable: boolean } | null;
+}
+export interface FeishuChatPair { code: string; expiresAt: string }
+export interface FeishuChatSendToday {
+  queued: boolean;
+  alreadySent: boolean;
+  practiceId: string | null;
+  completed?: boolean;
+  deliveryState?: 'sent' | 'pending' | 'sending' | 'uncertain' | 'failed' | 'cancelled';
 }
 
 export interface Settings extends Versioned {

@@ -9,6 +9,10 @@ import { Domain, PROJECT_STATUSES, KNOWLEDGE_STATUSES } from './domain.mjs';
 import { Transport } from './transport.mjs';
 import { Siyuan } from './siyuan.mjs';
 import { Feishu } from './feishu.mjs';
+import { FeishuChat } from './feishu-chat.mjs';
+import { FeishuChannel } from './feishu-channel.mjs';
+import { FeishuRegistration } from './feishu-registration.mjs';
+import { feishuBotEntry } from './feishu-entry.mjs';
 import { Model } from './model.mjs';
 import { Collector } from './collector.mjs';
 import { Learning } from './learning.mjs';
@@ -60,6 +64,17 @@ export function createApp(options = {}) {
   const reviews = new Reviews(store, domain, siyuan, jobs, learning);
   const backup = new Backup(store, domain, sources, secrets, jobs, version);
   const automation = new Automation(store, settings, domain, sources, collector, learning, model, jobs, { clock: options.automationClock });
+  const feishuChat = new FeishuChat(store, settings, secrets, domain, automation, learning, options.feishuChatOptions);
+  const feishuChannel = new FeishuChannel(feishuChat, settings, secrets, options.feishuChannelOptions);
+  let registrationChatRevision = null;
+  let chatIntent = 0; let registrationChatIntent = null;
+  const feishuRegistration = new FeishuRegistration(settings, secrets, { ...options.feishuRegistrationOptions,
+    onConfigured: () => {
+      if (chatIntent === registrationChatIntent && feishuChat.config().revision === registrationChatRevision) feishuChat.update({ enabled: true });
+      feishuChannel.wake();
+    } });
+  const chatDto = () => ({ ...feishuChat.public(), connection: feishuChannel.public() });
+  const wakeChat = () => setImmediate(() => feishuChannel.wake());
   const scheduler = new Scheduler(store, settings, domain, learning, collector, jobs, automation);
   const http = new Http(store, secrets, { root, frontendDir: options.frontendDir ?? resolve(root, 'frontend/dist'), port: options.port ?? 18997, origin: options.origin });
   const route = (method, path, handler, config) => http.route(method, path.startsWith('/api/') ? path : `/api/v1${path}`, handler, config);
@@ -277,10 +292,31 @@ export function createApp(options = {}) {
   route('POST', '/review-sessions/:id/responses', ({ params, body }) => reviews.queueResponse(params.id, input(body, ['presentationId', 'cardId', 'rating', 'elapsedMs', 'answer']), body.operationId), { status: 202 });
 
   route('GET', '/settings', () => settings.public());
+  route('GET', '/feishu-chat', () => chatDto());
+  route('GET', '/feishu-chat/entry', () => feishuBotEntry(settings));
+  route('PUT', '/feishu-chat', ({ body }) => {
+    feishuChat.update(input(body, ['enabled', 'remindersEnabled', 'reminderLocalTime'], feishuChat.config()));
+    chatIntent++;
+    wakeChat(); return chatDto();
+  });
+  route('POST', '/feishu-chat/pair', ({ body }) => { input(body, []); return feishuChat.pair(); });
+  route('POST', '/feishu-chat/send-today', ({ body }) => { input(body, []); const result = feishuChat.sendToday(); wakeChat(); return result; });
+  route('GET', '/feishu-chat/registration', () => feishuRegistration.public());
+  route('POST', '/feishu-chat/registration', ({ body }) => {
+    input(body, []);
+    if (!['starting', 'waiting'].includes(feishuRegistration.public().state)) {
+      registrationChatRevision = feishuChat.config().revision; registrationChatIntent = chatIntent;
+    }
+    return feishuRegistration.start();
+  });
+  route('POST', '/feishu-chat/registration/cancel', ({ body }) => { input(body, []); return feishuRegistration.cancel(); });
   route('GET', '/automation', () => automation.public());
   route('PUT', '/automation', ({ body }) => automation.update(input(body, ['enabled'], automation.config())));
   route('GET', '/today', () => automation.today());
-  route('PUT', '/settings', ({ body }) => settings.update(input(body, ['model', 'feishu', 'scheduler'], settings.raw())));
+  route('PUT', '/settings', ({ body }) => {
+    const result = settings.update(input(body, ['model', 'feishu', 'scheduler'], settings.raw()));
+    wakeChat(); return result;
+  });
   route('GET', '/jobs/:id', ({ params }) => jobs.public(params.id));
   route('GET', '/jobs', ({ query }) => filter(store.all('job').map(record => jobs.public(record.id)), query), { query: [...PAGE, 'status', 'type'] });
   route('POST', '/jobs/:id/reconcile', ({ params, body }) => {
@@ -315,8 +351,9 @@ export function createApp(options = {}) {
 
   let closed = false;
   return { server: http.server, store, secrets, settings, sources, domain, siyuan, feishu, model, collector, learning, jobs, reviews, backup, scheduler, automation,
-    async listen(port) { const address = await http.listen(port); jobs.start(); if (options.scheduler !== false) scheduler.start(); return address; },
-    async close() { if (closed) return; closed = true; scheduler.stop(); await collector.close(); await http.close(); await jobs.stop(); store.close(); },
+    feishuChat, feishuChannel, feishuRegistration,
+    async listen(port) { const address = await http.listen(port); jobs.start(); if (options.scheduler !== false) { scheduler.start(); feishuChannel.start(); } return address; },
+    async close() { if (closed) return; closed = true; scheduler.stop(); await feishuRegistration.stop(); await feishuChannel.stop(); await collector.close(); await http.close(); await jobs.stop(); store.close(); },
     get origin() { return http.origin; }, version,
   };
 }

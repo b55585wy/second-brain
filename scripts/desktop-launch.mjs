@@ -12,6 +12,27 @@ export const STARTUP_PORT = 18998;
 const execute = promisify(execFile);
 const pause = ms => new Promise(done => setTimeout(done, ms));
 const manualWarning = 'Manual records and template practice remain available; SiYuan sync/review is unavailable.';
+const unverifiedWarning = 'SiYuan is running on an unverified version. Core learning and Feishu remain available; SiYuan sync/review are unavailable until compatibility is verified.';
+
+function validVersion(version) {
+  if (typeof version !== 'string' || version.length > 64) return false;
+  const match = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/.exec(version);
+  if (!match) return false;
+  const prerelease = match[1]?.split('.') ?? []; const build = match[2]?.split('.') ?? [];
+  return [...prerelease, ...build].every(Boolean) && prerelease.every(part => !/^0\d+$/.test(part));
+}
+
+function nativeState(packet) {
+  const data = packet?.data;
+  const version = typeof data === 'string' ? data : data?.version;
+  if (packet?.code !== 0 || !validVersion(version)) return 'wrong';
+  return version === '3.8.8' ? 'ready' : 'unverified';
+}
+
+function nativeCompatible(state, warn) {
+  if (state === 'ready') return true;
+  warn(unverifiedWarning); return false;
+}
 
 export async function probeService(kind, fetcher = globalThis.fetch) {
   const url = kind === 'product' ? APP_URL + '/api/health' : NATIVE_URL + '/api/system/version';
@@ -21,9 +42,8 @@ export async function probeService(kind, fetcher = globalThis.fetch) {
     if (!response.ok) return 'wrong';
     const packet = await response.json();
     const data = packet?.data;
-    const ready = kind === 'product'
-      ? data?.status === 'ok' && data.apiVersion === 'v1' && data.stage === 'ready' && data.dependencies?.database === 'ok'
-      : packet?.code === 0 && (typeof data === 'string' ? data : data?.version) === '3.8.8';
+    if (kind === 'native') return nativeState(packet);
+    const ready = data?.status === 'ok' && data.apiVersion === 'v1' && data.stage === 'ready' && data.dependencies?.database === 'ok';
     return ready ? 'ready' : 'wrong';
   } catch (error) { return error.cause?.code === 'ECONNREFUSED' ? 'closed' : 'wrong'; }
 }
@@ -83,9 +103,9 @@ export async function ensureNative({ root = PROJECT_ROOT, localAppData = process
   catch (error) { warn('Cannot verify the SiYuan workspace (' + error.message + '). ' + manualWarning); return false; }
   const owners = workspaceOwners(records, workspace);
   const expectedOwner = owners.some(owner => owner.port === NATIVE_PORT);
-  if (state === 'ready') {
+  if (['ready', 'unverified'].includes(state)) {
     if (!expectedOwner) throw new Error('Port 19006 does not belong to the dedicated SiYuan workspace. No program was stopped.');
-    return true;
+    return nativeCompatible(state, warn);
   }
   if (owners.length && !expectedOwner) {
     warn('The dedicated SiYuan workspace is already open on another port. Close that window normally before retrying. ' + manualWarning);
@@ -103,7 +123,7 @@ export async function ensureNative({ root = PROJECT_ROOT, localAppData = process
   while (now() < deadline) {
     await sleep(pollMs);
     const next = await probe();
-    if (next === 'ready') return true;
+    if (['ready', 'unverified'].includes(next)) return nativeCompatible(next, warn);
     if (next === 'wrong') throw new Error('Port 19006 did not return the expected SiYuan service. No program was stopped.');
   }
   warn('SiYuan did not become ready in time. Do not start another copy. ' + manualWarning);

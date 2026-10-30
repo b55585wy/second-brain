@@ -32,12 +32,32 @@ test('health probes require product readiness and compatible native identity', a
       return jsonResponse({ code: 0, data });
     }), 'ready');
   }
-  assert.equal(await probeService('native', async () => jsonResponse({ code: 0, data: '9.0.0' })), 'wrong');
+  assert.equal(await probeService('native', async () => jsonResponse({ code: 0, data: '9.0.0' })), 'unverified');
   assert.equal(await probeService('product', async () => jsonResponse({ data: { status: 'ok' } })), 'wrong');
   assert.equal(await probeService('product', async () => new Response('unrelated', { status: 404 })), 'wrong');
   assert.equal(await probeService('native', async () => new Response('{')), 'wrong');
   assert.equal(await probeService('product', async () => { throw new Error('refused', { cause: { code: 'ECONNREFUSED' } }); }), 'closed');
   assert.equal(await probeService('product', async () => { throw new Error('timeout'); }), 'wrong');
+});
+
+test('valid unverified native versions remain identifiable without claiming Riff compatibility', async () => {
+  for (const version of ['3.8.9', '3.8.9-rc.1', '4.0.0', '3.8.8+build.1']) {
+    for (const data of [version, { version }]) {
+      assert.equal(await probeService('native', async () => jsonResponse({ code: 0, data })), 'unverified', version);
+    }
+  }
+});
+
+test('version tolerance never treats malformed native envelopes or nonversion text as SiYuan', async () => {
+  for (const packet of [
+    null, [], { data: '3.8.9' }, { code: '0', data: '3.8.9' }, { code: 1, data: '3.8.9' },
+    { code: 0 }, { code: 0, data: null }, { code: 0, data: [] }, { code: 0, data: { version: 389 } },
+    ...['', 'SiYuan', 'v3.8.9', '3.8', '03.8.9', '3.8.9 trailing text', '3.8.9-',
+      '3.8.9-rc..1', '3.8.9-.', '3.8.9+..', '3.8.9-01', '3.8.9+' + 'a'.repeat(64)].map(data => ({ code: 0, data })),
+  ]) {
+    assert.equal(await probeService('native', async () => jsonResponse(packet)), 'wrong', JSON.stringify(packet));
+  }
+  assert.equal(await probeService('native', async () => new Response(JSON.stringify({ code: 0, data: '3.8.9' }), { status: 503 })), 'wrong');
 });
 
 test('startup lock is exclusive and can be reacquired after release without a stale file', async t => {
@@ -95,6 +115,44 @@ test('healthy native is reused and an already starting native is not duplicated'
     assert.equal(await ensureNative(f.options), true);
     assert.equal(f.calls.some(Array.isArray), false);
   }
+});
+
+test('an owned unverified native warns about gated sync and review without spawning a replacement', async () => {
+  const f = nativeFixture(['unverified']); f.options.inspect = async () => [owner()];
+  assert.equal(await ensureNative(f.options), false);
+  assert.equal(f.calls.filter(Array.isArray).length, 0);
+  assert.equal(f.calls.filter(call => call === 'probe').length, 1);
+  assert.equal(f.warnings.length, 1);
+  assert.match(f.warnings[0], /Feishu.*available/i);
+  assert.match(f.warnings[0], /SiYuan sync\/review.*unavailable/i);
+});
+
+test('an unverified native with no matching dedicated workspace owner remains blocked', async () => {
+  for (const records of [[], [owner(19006, workspace + '-other')], [owner(19007)]]) {
+    const f = nativeFixture(['unverified']); f.options.inspect = async () => records;
+    await assert.rejects(ensureNative(f.options), /does not belong/);
+    assert.equal(f.calls.some(Array.isArray), false);
+    assert.equal(f.warnings.length, 0);
+  }
+});
+
+test('a cold native that reports an unverified version stops polling and starts no duplicate', async () => {
+  const f = nativeFixture(['closed', 'closed', 'unverified']); let started = false;
+  f.options.inspect = async () => started ? [owner()] : [];
+  f.options.start = async (...args) => { started = true; f.calls.push(['start', ...args]); };
+  assert.equal(await ensureNative(f.options), false);
+  assert.equal(f.calls.filter(Array.isArray).length, 1);
+  assert.equal(f.calls.filter(call => call === 'probe').length, 3);
+  assert.equal(f.warnings.length, 1);
+  assert.match(f.warnings[0], /Feishu.*available/i);
+  assert.match(f.warnings[0], /SiYuan sync\/review.*unavailable/i);
+});
+
+test('an already starting unverified native is not started for a second time', async () => {
+  const f = nativeFixture(['closed', 'unverified']); f.options.inspect = async () => [owner()];
+  assert.equal(await ensureNative(f.options), false);
+  assert.equal(f.calls.some(Array.isArray), false);
+  assert.match(f.warnings[0], /Feishu.*available/i);
 });
 
 test('missing executable or workspace permits manual/template use without creating anything', async () => {
@@ -160,6 +218,24 @@ test('warm desktop starts/reuses native then opens existing product without crea
   assert.equal(result.reused, true);
   assert.deepEqual(f.calls, ['lock', 'product', 'native', 'product', 'open', 'unlock']);
 });
+
+for (const productState of ['closed', 'ready']) {
+  test(`a real 3.8.9 version response permits ${productState === 'closed' ? 'starting' : 'reusing'} the knowledge and Feishu service`, async () => {
+    const f = desktopFixture(productState); const native = nativeFixture();
+    native.options.probe = () => probeService('native', async () => jsonResponse({ code: 0, data: '3.8.9' }));
+    native.options.inspect = async () => [owner()];
+    f.options.native = () => ensureNative(native.options);
+    const result = await launchDesktop(f.options);
+    assert.equal(result.nativeReady, false);
+    assert.equal(result.reused, productState === 'ready');
+    assert.equal(f.calls.filter(call => call === 'run').length, productState === 'closed' ? 1 : 0);
+    assert.equal(f.calls.filter(call => call === 'create').length, productState === 'closed' ? 1 : 0);
+    assert.equal(f.calls.filter(call => call === 'open').length, productState === 'ready' ? 1 : 0);
+    assert.equal(native.calls.some(Array.isArray), false);
+    assert.match(native.warnings[0], /Feishu.*available/i);
+    assert.equal(f.calls.at(-1), 'unlock');
+  });
+}
 
 test('concurrent desktop clicks start only one native instance and one product', async () => {
   const f = desktopFixture();

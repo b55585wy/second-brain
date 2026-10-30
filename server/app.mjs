@@ -11,6 +11,7 @@ import { Siyuan } from './siyuan.mjs';
 import { Feishu } from './feishu.mjs';
 import { FeishuChat } from './feishu-chat.mjs';
 import { FeishuChannel } from './feishu-channel.mjs';
+import { installFeishuNetwork } from './feishu-network.mjs';
 import { FeishuRegistration } from './feishu-registration.mjs';
 import { feishuBotEntry } from './feishu-entry.mjs';
 import { Model } from './model.mjs';
@@ -22,6 +23,7 @@ import { Backup } from './backup.mjs';
 import { Scheduler } from './scheduler.mjs';
 import { Automation } from './automation.mjs';
 import { Advice } from './advice.mjs';
+import { AdviceDiscussion } from './advice-discussion.mjs';
 import { FeishuCardActions } from './feishu-card-actions.mjs';
 import { Http, response } from './http.mjs';
 import { FIELDS, dto, select } from './dto.mjs';
@@ -67,11 +69,16 @@ export function createApp(options = {}) {
   const backup = new Backup(store, domain, sources, secrets, jobs, version);
   const automation = new Automation(store, settings, domain, sources, collector, learning, model, jobs, { clock: options.automationClock });
   const advice = new Advice(store, settings, domain, collector, learning, model, jobs, options.adviceOptions);
+  const discussion = new AdviceDiscussion(store, advice, learning, jobs, options.discussionOptions);
   learning.advice = advice;
+  learning.discussion = discussion;
   learning.onAttempt = attempt => advice.schedule(attempt.id, { automatic: true });
   const feishuChat = new FeishuChat(store, settings, secrets, domain, automation, learning, options.feishuChatOptions);
   const feishuCards = new FeishuCardActions(store, feishuChat, advice, learning, domain, reviews, siyuan, jobs, options.feishuCardOptions);
   feishuChat.cards = feishuCards;
+  feishuChat.discussion = discussion;
+  feishuCards.discussion = discussion;
+  discussion.channelGuard = channel => feishuChat.discussionChannelCurrent(channel);
   const feishuChannel = new FeishuChannel(feishuChat, settings, secrets, options.feishuChannelOptions);
   let registrationChatRevision = null;
   let chatIntent = 0; let registrationChatIntent = null;
@@ -132,6 +139,7 @@ export function createApp(options = {}) {
   jobs.register('daily_plan_generate', async (payload, job) => ({ plan: dto('plans', await learning.generate(payload, job)) }));
   jobs.register('practice_feedback', async payload => ({ feedback: dto('feedback', (await learning.feedback(payload.attemptId, payload.request)).feedback) }));
   jobs.register('answer_advice', (payload, job) => advice.run(payload, job));
+  jobs.register('advice_discussion', (payload, job) => discussion.run(payload, job));
   jobs.register('feishu_card_action', (payload, job) => feishuCards.run(payload, job));
   jobs.register('review_response', async (payload, job) => {
     const result = await reviews.grade(payload, job);
@@ -292,6 +300,19 @@ export function createApp(options = {}) {
   route('POST', '/practices/:id/attempts', ({ params, body }) => dto('attempts', learning.attempt(params.id, input(body, ['output', 'assistanceLevel', 'evidenceRefs']))), { status: 201 });
   route('GET', '/advice-settings', () => advice.settingsPublic());
   route('PUT', '/advice-settings', ({ body }) => advice.update(input(body, ['enabled', 'dailyCallLimit'], advice.config())));
+  route('GET', '/feedback/:id/discussion', ({ params }) => discussion.public(params.id));
+  route('POST', '/feishu-chat/open-advice', ({ body }) => {
+    const request = input(body, ['feedbackId']);
+    const result = feishuChat.openDiscussion(request.feedbackId); wakeChat(); return result;
+  });
+  route('POST', '/feedback/:id/discussion', ({ params, body }) => discussion.submit(params.id,
+    { ...input(body, ['message', 'expectedVersion']), operationId: body.operationId }));
+  route('POST', '/feedback/:id/discussion/retry', ({ params, body }) => discussion.retry(params.id,
+    { ...input(body, ['turnId', 'expectedVersion']), operationId: body.operationId }));
+  route('POST', '/feedback/:id/discussion/save', ({ params, body }) => discussion.save(params.id,
+    { ...input(body, ['expectedVersion']), operationId: body.operationId }));
+  route('POST', '/feedback/:id/discussion/dismiss', ({ params, body }) => discussion.dismiss(params.id,
+    { ...input(body, ['expectedVersion']), operationId: body.operationId }));
   route('GET', '/attempts/:id/advice', ({ params }) => advice.public(params.id));
   route('POST', '/attempts/:id/advice', ({ params, body }) => {
     const request = input(body, ['retry']);
@@ -393,11 +414,22 @@ export function createApp(options = {}) {
       dailyPlan: dto('plans', learning.plan()), recentCheckpoints: store.all('checkpoint').slice(0, 5).map(record => dto('checkpoints', record)), connections: settings.connections(), warnings };
   });
 
+  const releaseFeishuNetwork = installFeishuNetwork(root, options.feishuNetworkOptions);
   let closed = false;
   return { server: http.server, store, secrets, settings, sources, domain, siyuan, feishu, model, collector, learning, jobs, reviews, backup, scheduler, automation,
-    feishuChat, feishuChannel, feishuRegistration, feishuCardRegistration, feishuCards, advice,
+    feishuChat, feishuChannel, feishuRegistration, feishuCardRegistration, feishuCards, advice, discussion,
     async listen(port) { const address = await http.listen(port); jobs.start(); if (options.scheduler !== false) { scheduler.start(); feishuChannel.start(); } return address; },
-    async close() { if (closed) return; closed = true; scheduler.stop(); await feishuRegistration.stop(); await feishuCardRegistration.stop(); await feishuChannel.stop(); await collector.close(); await http.close(); await jobs.stop(); store.close(); },
+    async close() {
+      if (closed) return;
+      closed = true; scheduler.stop();
+      let failure;
+      const finishers = [() => feishuRegistration.stop(), () => feishuCardRegistration.stop(), () => feishuChannel.stop(),
+        () => collector.close(), () => http.close(), () => jobs.stop(), releaseFeishuNetwork, () => store.close()];
+      for (const finish of finishers) {
+        try { await finish(); } catch (error) { failure ??= error; }
+      }
+      if (failure) throw failure;
+    },
     get origin() { return http.origin; }, version,
   };
 }

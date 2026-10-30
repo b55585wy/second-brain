@@ -11,6 +11,7 @@ const KINDS = {
   reviewSessions: 'review-session', reviewResponses: 'review-response', jobHistory: 'job-history',
   focusArtifacts: 'focus-artifact',
   adviceSelections: 'advice-selection',
+  adviceDiscussions: 'advice-discussion', adviceDiscussionTurns: 'advice-discussion-turn', adviceDiscussionVersions: 'advice-discussion-version',
 };
 const JOB_FIELDS = ['id', 'type', 'trigger', 'status', 'commitState', 'operationId', 'progress', 'createdAt', 'updatedAt', 'finishedAt', 'error'];
 const canonical = value => JSON.stringify(normalize(value));
@@ -78,6 +79,8 @@ export class Backup {
         if (entity === 'attempts' && selected.practices.has(record.practiceId)) add(entity, record.id);
         if (entity === 'feedback' && selected.attempts.has(record.attemptId)) add(entity, record.id);
         if (entity === 'adviceSelections' && (selected.attempts.has(record.attemptId) || selected.feedback.has(record.feedbackId))) add(entity, record.id);
+        if (['adviceDiscussions', 'adviceDiscussionTurns', 'adviceDiscussionVersions'].includes(entity)
+          && (selected.attempts.has(record.attemptId) || selected.feedback.has(record.feedbackId))) add(entity, record.id);
         if (entity === 'reviewResponses' && selected.reviewSessions.has(record.sessionId)) add(entity, record.id);
         if (entity === 'plans' && record.items.some(item => selected.practices.has(item.practiceId) || selected.outputs.has(item.outputId) || item.knowledgeIds.some(key => selected.knowledge.has(key)))) add(entity, record.id);
         if (!selected[entity].has(entityId(entity, record))) continue;
@@ -98,6 +101,18 @@ export class Backup {
     if (entity === 'focusArtifacts') add('practices', record.practiceId);
     if (entity === 'feedback') add('attempts', record.attemptId);
     if (entity === 'adviceSelections') { add('feedback', record.feedbackId); add('attempts', record.attemptId); add('outputs', record.outputId); }
+    if (['adviceDiscussions', 'adviceDiscussionTurns', 'adviceDiscussionVersions'].includes(entity)) {
+      add('feedback', record.feedbackId); add('attempts', record.attemptId);
+    }
+    if (entity === 'adviceDiscussions') {
+      add('adviceDiscussionTurns', record.lastTurnId);
+      add('adviceDiscussionVersions', `dv_${digest([record.feedbackId, record.currentVersion]).slice(0, 48)}`);
+    }
+    if (entity === 'adviceDiscussionTurns') {
+      add('adviceDiscussionTurns', record.retryOfTurnId);
+      add('adviceDiscussionVersions', `dv_${digest([record.feedbackId, record.baseVersion]).slice(0, 48)}`);
+    }
+    if (entity === 'adviceDiscussionVersions') { add('adviceDiscussionTurns', record.turnId); add('outputs', record.outputId); }
     if (entity === 'reviewResponses') { add('reviewSessions', record.sessionId); add('knowledge', record.knowledgeId); }
     const visit = value => {
       if (Array.isArray(value)) { value.forEach(visit); return; }
@@ -141,7 +156,7 @@ export class Backup {
     onlyFields(document, ['schemaVersion', 'productVersion', 'exportedAt', 'sourceContentIncluded', 'redactionCount', 'data']);
     if (document.schemaVersion !== EXPORT_SCHEMA) fail(422, 'IMPORT_SCHEMA_UNSUPPORTED', '不支持此备份版本。');
     onlyFields(document.data, ['profile', ...Object.keys(KINDS)]);
-    for (const entity of ['focusArtifacts', 'adviceSelections']) {
+    for (const entity of ['focusArtifacts', 'adviceSelections', 'adviceDiscussions', 'adviceDiscussionTurns', 'adviceDiscussionVersions']) {
       if (!Object.hasOwn(document.data, entity)) document = { ...document, data: { ...document.data, [entity]: [] } };
     }
     requireValue(Object.keys(document.data).length === 1 + Object.keys(KINDS).length, '备份缺少必要集合。');
@@ -300,6 +315,16 @@ export class Backup {
     if (entity === 'reviewSessions') { record.status = 'blocked'; record.pendingJobId = null; record.presentationId = null; }
     if (entity === 'plans') { if (record.status !== 'completed') record.status = 'stale'; record.generationJobId = null; }
     if (entity === 'attempts') { record.feedback = null; delete record.latestFeedbackId; }
+    if (entity === 'adviceDiscussions') {
+      record.pendingTurnId = null; record.status = 'ready'; record.lastError = null;
+    }
+    if (entity === 'adviceDiscussionTurns') {
+      record.jobId = null;
+      if (['queued', 'running'].includes(record.status)) {
+        record.status = 'failed';
+        record.lastError = { code: 'RESTORED_HISTORY', message: '已恢复讨论记录，没有恢复或重发模型任务。', retryable: false };
+      }
+    }
     const visit = value => {
       if (!value || typeof value !== 'object') return;
       if ('profileRevision' in value) value.profileRevision = applyProfile ? profileMap.get(value.profileRevision) ?? null : null;

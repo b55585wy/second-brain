@@ -3,7 +3,7 @@ import { digest, truncate } from './validation.mjs';
 import { fail, publicError } from './errors.mjs';
 import { renderPracticeCard, renderAdviceCard, renderFlashcardCard, renderStatusCard } from './feishu-cards.mjs';
 
-const ACTIONS = new Set(['submit_answer', 'view_advice', 'retry_advice', 'save_advice', 'dismiss_advice',
+const ACTIONS = new Set(['submit_answer', 'view_advice', 'retry_advice', 'save_advice', 'dismiss_advice', 'discuss_advice', 'retry_discussion',
   'flashcards', 'create_flashcard', 'reveal_card', 'rate_again', 'rate_hard', 'rate_good', 'rate_easy', 'refresh']);
 const RATINGS = { rate_again: 'again', rate_hard: 'hard', rate_good: 'good', rate_easy: 'easy' };
 const PREFIXES = { none: '独立：', hint: '提示：', partial: '部分代写：', full: 'AI代写：', unknown: '' };
@@ -23,6 +23,7 @@ export class FeishuCardActions {
   today() { return this.chat.automation.today(); }
 
   current(state) {
+    if (state?.discussion && state.section === 'advice' && this.discussion) return this.discussionCurrent(state);
     const binding = this.chat.binding(); const today = this.today();
     return !!(state && this.chat.config().enabled && this.chat.configured() && this.chat.config().cardsEnabled && binding
       && state.appIdentity === this.chat.identity() && state.bindingEpoch === binding.epoch
@@ -30,6 +31,15 @@ export class FeishuCardActions {
       && state.practiceId === today.practice?.id && state.context === this.chat.context(today)
       && (state.section !== 'advice' && state.view !== 'advice' || state.attemptId === today.attempt?.id)
       && (!state.reviewEpoch || state.reviewEpoch === this.siyuan.epoch()));
+  }
+
+  discussionCurrent(state) {
+    if (!this.chat.discussionChannelCurrent({ appIdentity: state.appIdentity, bindingEpoch: state.bindingEpoch,
+      userId: state.userId, chatId: state.chatId, cardsRequired: true })) return false;
+    try {
+      const feedback = this.store.require('feedback', state.feedbackId); const material = this.advice.material(feedback.attemptId);
+      return feedback.attemptId === state.attemptId && material.practice.id === state.practiceId;
+    } catch { return false; }
   }
 
   issue(id, version) {
@@ -56,8 +66,10 @@ export class FeishuCardActions {
   }
 
   decorateAdvice(outbox, inbox, advice) {
+    const discussion = this.discussion?.public(advice.feedback.id);
     return this.decorate(outbox, { view: 'advice', section: 'advice', phase: 'advice_ready', practiceId: inbox.practiceId,
-      context: inbox.practiceContext, attemptId: inbox.attemptId, feedbackId: advice.feedback.id });
+      context: inbox.practiceContext, attemptId: inbox.attemptId, feedbackId: advice.feedback.id,
+      discussion: !!discussion, discussionVersion: discussion?.version ?? null, discussionFingerprint: discussion ? digest(discussion) : null });
   }
 
   confirm(item, messageId) {
@@ -71,8 +83,8 @@ export class FeishuCardActions {
     const value = event.action?.value;
     if (value && typeof value === 'object' && value.v === 1) return { token: value.t, name: value.a };
     const name = event.action?.name ?? event.raw?.action?.name ?? event.raw?.event?.action?.name;
-    return typeof name === 'string' && /^submit_[a-f0-9]{24}$/.test(name)
-      ? { token: name.slice(7), name: 'submit_answer' } : null;
+    const match = typeof name === 'string' && /^(submit|discuss)_([a-f0-9]{24})$/.exec(name);
+    return match ? { token: match[2], name: match[1] === 'submit' ? 'submit_answer' : 'discuss_advice' } : null;
   }
 
   authorized(event, decoded, ingressIdentity) {
@@ -99,12 +111,27 @@ export class FeishuCardActions {
     return { answer: answer.trim(), assistance };
   }
 
+  discussionForm(event) {
+    const values = event.raw?.action?.form_value ?? event.raw?.event?.action?.form_value ?? {};
+    if (typeof values.advice_reply !== 'string' || !values.advice_reply.trim() || [...values.advice_reply].length > 1000) {
+      fail(422, 'VALIDATION_ERROR', '请填写 1—1000 字的讨论回复。');
+    }
+    return { message: values.advice_reply.trim() };
+  }
+
   assertAction(state, name) {
     if (state.actionJobId && PENDING.includes(this.store.get('job', state.actionJobId)?.status)) fail(409, 'JOB_OVERLAP', '这张卡片正在处理，请稍后刷新。');
     if (name === 'submit_answer' && (state.view !== 'practice' || this.today().attempt)) fail(409, 'INVALID_STATE', '这次回答已经保存，请查看建议或进入记忆闪卡。');
     if (name === 'reveal_card' && (state.view !== 'flashcard' || state.revealed || state.monitorJobId)) fail(409, 'INVALID_STATE', '当前不能再次翻面，请刷新卡片。');
     if (RATINGS[name] && (state.view !== 'flashcard' || !state.revealed || state.monitorJobId)) fail(409, 'INVALID_STATE', '请先独立回忆并翻面，再选择记忆自评。');
     if (['save_advice', 'dismiss_advice'].includes(name) && (!state.feedbackId || state.view !== 'advice')) fail(409, 'INVALID_STATE', '请先查看这次回答的建议。');
+    if (['discuss_advice', 'retry_discussion'].includes(name) && (!state.discussion || state.view !== 'advice')) fail(409, 'INVALID_STATE', '请先打开当前建议再继续讨论。');
+    if (state.discussion && ['save_advice', 'dismiss_advice', 'discuss_advice', 'retry_discussion'].includes(name)) {
+      const current = this.discussion.public(state.feedbackId);
+      if (state.discussionVersion !== current.version) fail(409, 'DISCUSSION_VERSION_CHANGED', '建议已有新版本，请刷新卡片。');
+      if (current.pendingTurnId && name !== 'retry_discussion') fail(409, 'DISCUSSION_PENDING', '讨论正在生成或结果待确认，请等待或明确重试。');
+      if (name === 'retry_discussion' && !current.canRetry) fail(409, 'INVALID_STATE', '当前讨论无需重试。');
+    }
     if (name === 'create_flashcard' && state.phase !== 'no_due_cards') fail(409, 'INVALID_STATE', '请先查看记忆闪卡，再按当前状态创建。');
   }
 
@@ -113,21 +140,29 @@ export class FeishuCardActions {
       const decoded = this.decode(event); const authorized = this.authorized(event, decoded, ingressIdentity);
       if (!authorized) return toast('这张卡片已失效或不属于当前绑定，请发送“今日练习”重新获取。', 'error');
       const { state, stale } = authorized; const name = stale ? 'resync' : decoded.name;
-      const form = !stale && name === 'submit_answer' ? this.form(event) : null;
-      const operationId = `card_${digest([state.id, state.nonceHash, name, form, stale ? digest(decoded.token) : null]).slice(0, 48)}`;
+      const form = stale ? null : name === 'submit_answer' ? this.form(event) : name === 'discuss_advice' ? this.discussionForm(event) : null;
       const eventToken = event.raw?.event_id ?? event.raw?.header?.event_id ?? event.raw?.token ?? '';
-      const eventId = digest([digest(String(eventToken)), operationId]);
+      const rawForm = event.raw?.action?.form_value ?? event.raw?.event?.action?.form_value ?? {};
+      const formDigest = digest(rawForm);
+      const eventId = digest([state.id, state.appIdentity, digest(decoded.token), decoded.name, digest(String(eventToken)), formDigest]);
+      const operationId = `card_${digest(stale ? ['resync', eventId] : [state.id, digest(decoded.token), decoded.name, formDigest]).slice(0, 48)}`;
       if (this.store.get('feishu-card-event', eventId) || this.store.all('job').some(job => job.operationId === operationId)) return toast('这次操作已接收，不会重复执行。');
       this.assertAction(state, name);
       return this.store.transaction(() => {
-        if (form) this.submit(state, form, operationId);
+        if (name === 'submit_answer') this.submit(state, form, operationId);
+        if (name === 'discuss_advice') this.discussion.submit(state.feedbackId, { ...form, expectedVersion: state.discussionVersion,
+          operationId, channel: this.chat.discussionChannel(true) });
+        if (name === 'retry_discussion') this.discussion.retry(state.feedbackId, { turnId: this.discussion.state(state.feedbackId).lastTurnId,
+          expectedVersion: state.discussionVersion, operationId, channel: this.chat.discussionChannel(true) });
         const ack = this.jobs.enqueue('feishu_card_action', { cardId: state.id, action: name, operationId,
-          appIdentity: state.appIdentity, bindingEpoch: state.bindingEpoch, context: state.context, trigger: 'user' }, operationId, `feishu-card:${state.id}`);
+          appIdentity: state.appIdentity, bindingEpoch: state.bindingEpoch, context: state.context, discussionVersion: state.discussionVersion, trigger: 'user' }, operationId, `feishu-card:${state.id}`);
         this.save(state.id, { actionJobId: ack.jobId });
         this.store.put('feishu-card-event', { cardId: state.id, action: name, jobId: ack.jobId,
-          eventTokenHash: digest(String(eventToken)), formDigest: digest(form), receivedAt: this.clock().toISOString() }, eventId);
+          eventTokenHash: digest(String(eventToken)), formDigest, receivedAt: this.clock().toISOString() }, eventId);
         this.chat.saveState({ lastCardActionAt: this.clock().toISOString(), lastCardAppIdentity: state.appIdentity, lastCardBindingEpoch: state.bindingEpoch });
-        return toast(stale ? '正在恢复卡片，请稍后查看当前状态。' : form ? '回答已保存，正在更新卡片。' : '已接收，正在更新卡片。', 'success');
+        return toast(stale ? '正在恢复卡片，请稍后查看当前状态。' : name === 'discuss_advice'
+          ? ['好', '好的', 'OK', 'ok', '收到', '谢谢'].includes(form.message) ? '满意后点击保存建议；当前未自动保存。' : '讨论已接收，当前未自动保存。'
+          : name === 'submit_answer' ? '回答已保存，正在更新卡片。' : '已接收，正在更新卡片。', 'success');
       });
     } catch (error) { return toast(publicError(error).body.error.message, 'error'); }
   }
@@ -150,7 +185,10 @@ export class FeishuCardActions {
       minutes: today.practice.estimatedMinutes, token, canSubmit: !today.attempt, answerStatus: today.attempt ? '回答已保存，可查看建议或进入记忆闪卡。' : '' });
     if (state.view === 'advice') {
       const feedback = this.store.require('feedback', state.feedbackId); const decision = this.store.get('advice-selection', feedback.id);
-      return renderAdviceCard({ ...this.adviceParts(feedback), token, saved: decision?.state === 'saved', dismissed: decision?.state === 'dismissed' });
+      const discussion = state.discussion ? this.discussion?.public(state.feedbackId) : null;
+      return renderAdviceCard({ ...this.adviceParts(discussion?.candidate ?? feedback), token,
+        saved: discussion ? discussion.saved : decision?.state === 'saved', dismissed: discussion ? discussion.dismissed : decision?.state === 'dismissed',
+        ...(discussion ? { discussion: { ...discussion, originalSummary: feedback.summary } } : {}) });
     }
     if (state.view === 'flashcard') return renderFlashcardCard({ question: state.question, answer: state.revealed ? state.answer : undefined,
       revealed: !!state.revealed, token, status: '记忆自评不等于事实核验或长期能力判断。', remaining: state.remaining });
@@ -161,17 +199,31 @@ export class FeishuCardActions {
   status(id, title, message, fields = {}) { return this.update(id, { view: 'status', title, message, ...fields }); }
 
   showAdvice(state, retry = false) {
+    if (state.discussion && this.discussion && state.feedbackId) return this.showDiscussion(state);
     const today = this.today();
     if (!today.attempt) return this.status(state.id, '先完成回答', '回答保存后可以查看具体建议。', { actions: [action('refresh', '返回练习')] });
     const advice = this.advice.schedule(today.attempt.id, { retry });
-    if (advice.status === 'ready' && advice.feedback) return this.update(state.id, { view: 'advice', section: 'advice', phase: 'advice_ready',
-      attemptId: today.attempt.id, feedbackId: advice.feedback.id, waitingAdviceAttempt: null });
+    if (advice.status === 'ready' && advice.feedback) {
+      this.update(state.id, { view: 'advice', section: 'advice', phase: 'advice_ready', attemptId: today.attempt.id,
+        feedbackId: advice.feedback.id, waitingAdviceAttempt: null, discussion: !!this.discussion });
+      return this.discussion ? this.showDiscussion(this.state(state.id)) : this.state(state.id);
+    }
     return this.status(state.id, '回答建议', advice.message, { section: 'advice', attemptId: today.attempt.id,
       waitingAdviceAttempt: PENDING.includes(advice.status) ? today.attempt.id : null,
       actions: [action(advice.canRetry ? 'retry_advice' : 'view_advice', advice.canRetry ? '重试点评' : '查看建议'), action('flashcards', '记忆闪卡')] });
   }
 
-  selectAdvice(state, selection, operationId) {
+  showDiscussion(state) {
+    const current = this.discussion.public(state.feedbackId);
+    return this.update(state.id, { view: 'advice', section: 'advice', discussion: true, discussionVersion: current.version,
+      discussionFingerprint: digest(current), phase: `discussion_${current.status}` });
+  }
+
+  selectAdvice(state, selection, operationId, expectedVersion = state.discussionVersion) {
+    if (state.discussion && this.discussion) {
+      this.discussion[selection === 'saved' ? 'save' : 'dismiss'](state.feedbackId, { expectedVersion, operationId });
+      return this.showDiscussion(state);
+    }
     const feedback = this.store.require('feedback', state.feedbackId); const attempt = this.store.require('attempt', feedback.attemptId);
     if (attempt.id !== state.attemptId) fail(409, 'INVALID_STATE', '建议与本次回答不匹配。');
     this.store.transaction(() => {
@@ -255,8 +307,13 @@ export class FeishuCardActions {
       const name = payload.action;
       if (name === 'submit_answer') this.update(state.id, { view: 'practice', attemptId: this.today().attempt?.id ?? null, phase: 'answer_saved' });
       else if (name === 'view_advice' || name === 'retry_advice') this.showAdvice(state, name === 'retry_advice');
-      else if (name === 'save_advice' || name === 'dismiss_advice') this.selectAdvice(state, name === 'save_advice' ? 'saved' : 'dismissed', payload.operationId);
-      else if (name === 'flashcards') await this.startReview(state);
+      else if (name === 'save_advice' || name === 'dismiss_advice') this.selectAdvice(state, name === 'save_advice' ? 'saved' : 'dismissed', payload.operationId, payload.discussionVersion);
+      else if (name === 'discuss_advice' || name === 'retry_discussion') this.showDiscussion(state);
+      else if (name === 'flashcards') {
+        if (state.discussion && (this.today().practice?.id !== state.practiceId || this.chat.context(this.today()) !== state.context)) {
+          this.status(state.id, '历史建议', '这份建议的学习上下文已不同，请到知行网页打开记忆闪卡。', { actions: [action('view_advice', '返回建议')] });
+        } else await this.startReview(state);
+      }
       else if (name === 'create_flashcard') this.createFlashcard(state);
       else if (name === 'reveal_card') this.reveal(state);
       else if (RATINGS[name]) this.rate(state, name, payload.operationId);
@@ -316,6 +373,8 @@ export class FeishuCardActions {
         try {
           if (original.monitorJobId) await this.monitor(original);
           let state = this.state(original.id);
+          if (state.discussion && state.section === 'advice' && digest(this.discussion.public(state.feedbackId)) !== state.discussionFingerprint) this.showDiscussion(state);
+          state = this.state(original.id);
           if (state.waitingAdviceAttempt && !PENDING.includes(this.advice.public(state.waitingAdviceAttempt).status)) this.showAdvice(state);
           state = this.state(original.id);
           const attemptId = this.today().attempt?.id ?? null;

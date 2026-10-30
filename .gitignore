@@ -5,6 +5,7 @@ credentials*.json
 /runtime/*
 !/runtime/RUNBOOK.md
 !/runtime/connection.example.json
+!/runtime/feishu-network.example.json
 /workspace/
 /workspaces/
 .env

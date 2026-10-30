@@ -1,8 +1,10 @@
 # 第二大脑
 
-知行是一款以降低认知负荷为目标的本地学习工具。当前本机已部署 **本地单用户 Beta（0.4.0）**：后台按目标整理已授权对话，首页直接给出独立输出练习，可选 AI 点评帮助确定下一步；飞书私聊与网页共用回答记录。原有项目、知识、思源复习和手动采集保留在高级工具中。
+知行是一款以降低认知负荷为目标的本地学习工具。当前本机已部署 **本地单用户 Beta（0.5.0）**：后台按目标整理已授权对话，首页直接给出独立输出练习，可选 AI 点评帮助确定下一步；飞书私聊与网页共用回答记录。原有项目、知识、思源复习和手动采集保留在高级工具中。
 
-0.4.0 已完成完整回归、本机升级及一次既有回答的真实 DeepSeek 点评；思源 3.8.9 的独立真实 HTTP 验收和本机连接检查通过。飞书学习卡片已实现，当前等待用户扫码并实际点击按钮，尚未完成真实卡片闭环验收。见 [回答建议验收](docs/ANSWER-ADVICE-VERIFICATION-20261030.md)、[按钮说明](docs/FEISHU-LEARNING-CARDS.md)和[思源验收](docs/SIYUAN-389-VERIFICATION-20261030.md)。云端发布状态以 GitHub Release 为准。
+0.4.0 已完成完整回归、本机升级、一次既有回答的真实 DeepSeek 点评，以及当前学习卡片的真实投递和按钮回调确认；思源 3.8.9 的独立真实 HTTP 验收和本机连接检查通过。见 [回答建议验收及后续补记](docs/ANSWER-ADVICE-VERIFICATION-20261030.md)、[按钮说明](docs/FEISHU-LEARNING-CARDS.md)和[思源验收](docs/SIYUAN-389-VERIFICATION-20261030.md)。云端发布状态以 GitHub Release 为准。
+
+**0.5：先讨论，再保存。** 可以针对建议追问或要求修改，满意后才点击保存当前版本；原回答、原点评及已保存版本保留。完整后端962项、前端224项、打包45项及类型／构建检查通过，现有真实反馈的原建议卡片已被平台接受，打开它没有调用模型或创建成果。用户真实追问、AI回复和明确保存仍待实际操作验收，不能用旧按钮标记代替。此能力主要在飞书卡片和引用回复中使用，不增加独立聊天页面。见 [讨论说明](docs/ADVICE-DISCUSSION-API.md)和[0.5验收记录](docs/ADVICE-DISCUSSION-VERIFICATION-20261031.md)。
 
 **日常只需打开「今天」，看重点，写输出。** 档案、对话范围和模型配置一次即可开启自动整理。详见 [使用 SOP](docs/DAILY-SOP.md) 与 [简化目标](docs/SIMPLICITY.md)。旧手动版已固定为 [实验对照 Release](https://github.com/b55585wy/second-brain/releases/tag/control-manual-v0.1.0-20261028)；[CHI 研究草案](docs/CHI-RESEARCH-PLAN.md)区分了产品验收与尚待验证的研究结论。
 
@@ -52,7 +54,7 @@ npm.cmd test
 
 **飞书学习入口可选。** 在偏好设置使用扫码流程配置应用，连接后获取一次性绑定码，在机器人私聊中完成绑定。机器人发送现有今日练习，回答直接保存为网页中的同一次练习记录；提醒和本地自查不调用模型。程序须持续运行；扫码保存应用不代表权限和发布已经生效，详见 [接入说明](docs/FEISHU-CHAT.md)。授权文档导入仍可通过高级配置使用。内置自由聊天、学习进度 AI 分析和自适应学习见 [长期路线](docs/CHAT-CHANNEL-DIRECTION.md)。
 
-0.4 的 **扫码启用学习卡片** 为现有机器人补充按钮回调，保留私聊绑定；需用户扫码并实际点击按钮后确认连通。卡片支持回答、查看建议、保存或暂不采纳、进入思源记忆闪卡。当前仍待这项真实卡片验收。
+0.4 的 **扫码启用学习卡片** 为现有机器人补充按钮回调，保留私聊绑定；本机已确认当前卡片送达及真实按钮回调，无需每天重复扫码。卡片支持回答、查看建议、保存或暂不采纳、进入思源记忆闪卡。0.5 新增“继续讨论”，每轮 AI 回复与点评共用现有日额度；发送“OK”、查看已有结果和明确保存均不额外调用模型。
 
 ## 数据保存
 
@@ -75,4 +77,4 @@ SiYuan 笔记保存在你手动选择的独立工作区，建议使用全新的 
 | `npm.cmd run typecheck` | 前端 TypeScript 检查 |
 | `.\start.cmd --check` | 只检查启动条件，不启动服务 |
 
-[架构](docs/ARCHITECTURE.md) · [API 契约](docs/API.md) · [验收场景](docs/ACCEPTANCE.md) · [3.8.8 历史验收](docs/NATIVE-VERIFICATION-20261028.md) · [3.8.9 独立验收](docs/SIYUAN-389-VERIFICATION-20261030.md)。当前范围为本地单用户 Beta；自动整理已完成[有限实机验证](docs/SIMPLE-VERIFICATION-20261029.md)，0.4 已有一次真实回答点评，飞书文档授权导入与学习卡片真实闭环仍待验证。SiYuan 适用其 [AGPL-3.0 许可](https://github.com/siyuan-note/siyuan/blob/v3.8.9/LICENSE)；未复制其源码，本应用许可与未来分发方式尚未选择。
+[架构](docs/ARCHITECTURE.md) · [API 契约](docs/API.md) · [验收场景](docs/ACCEPTANCE.md) · [3.8.8 历史验收](docs/NATIVE-VERIFICATION-20261028.md) · [3.8.9 独立验收](docs/SIYUAN-389-VERIFICATION-20261030.md)。当前范围为本地单用户 Beta；自动整理已完成[有限实机验证](docs/SIMPLE-VERIFICATION-20261029.md)，0.4 已有真实回答点评和当前卡片回调证据。飞书文档授权导入、0.5 真实讨论及明确采纳仍待验证。SiYuan 适用其 [AGPL-3.0 许可](https://github.com/siyuan-note/siyuan/blob/v3.8.9/LICENSE)；未复制其源码，本应用许可与未来分发方式尚未选择。

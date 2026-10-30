@@ -1,5 +1,7 @@
 # Feishu Card 2.0 UI Review
 
+本页保留 0.4 的四模板设计基线。0.5 的可选讨论分支增加“继续讨论”输入、候选修改和明确保存；当前交互与验证见 [讨论说明](ADVICE-DISCUSSION-API.md) 和 [0.5 验收](ADVICE-DISCUSSION-VERIFICATION-20261031.md)。
+
 ## Design plan
 
 All four templates use Card 2.0, `default` width, a blue header, blue/grey content blocks, and two to five root visual groups. Dynamic rich text is escaped and bounded; titles and button labels use `plain_text`. No icons, images, links, animations, backend imports, storage, network calls, or business policy are included.

@@ -249,6 +249,168 @@ export function renderPracticeCard({
   return baseCard('今日学习', `${safeGoal} · ${time}`, elements);
 }
 
+function renderAdviceDiscussionCard({
+  summary,
+  strengths,
+  improvements,
+  nextAction,
+  limitations,
+  token,
+  discussion,
+}) {
+  const state = discussion && typeof discussion === 'object' ? discussion : {};
+  const safeToken = tokenText(token);
+  const status = sourceText(state.status).toLowerCase();
+  const pending = status === 'queued' || status === 'running';
+  const retained = pending || ['failed', 'uncertain', 'limited', 'unavailable', 'stale'].includes(status);
+  const currentSaved = state.saved === true;
+  const currentDismissed = state.dismissed === true;
+  const statusFallbacks = {
+    queued: '正在根据补充更新建议',
+    running: '正在根据补充更新建议',
+    failed: '本次更新未完成，以下保留上一版建议。',
+    uncertain: '本次更新结果不确定，以下保留上一版建议。',
+    limited: '本次更新能力受限，以下保留上一版建议。',
+    unavailable: '讨论暂时不可用，以下保留上一版建议。',
+    stale: '讨论状态已过期，以下保留上一版建议。',
+    initial: '可继续补充不清楚或需要调整的地方。',
+    idle: '可继续补充不清楚或需要调整的地方。',
+    ready: '当前建议已就绪。',
+  };
+  const statusFallback = Object.prototype.hasOwnProperty.call(statusFallbacks, status)
+    ? statusFallbacks[status]
+    : '以下为当前可用建议。';
+  const statusMessage = markdown(
+    state.message,
+    statusFallback,
+    240,
+    720,
+  );
+  const latestUser = markdown(state.lastUserMessage, '', 500, 1500);
+  const latestReply = markdown(state.reply, '', 700, 2100);
+  const discussionElements = [
+    textElement('**讨论状态**'),
+    textElement(statusMessage, { secondary: true }),
+  ];
+  if (latestUser) {
+    discussionElements.push(
+      textElement('**你的补充**'),
+      textElement(latestUser),
+    );
+  }
+  if (latestReply) {
+    discussionElements.push(
+      textElement(`**${retained ? '上次回复' : '最新回复'}**`),
+      textElement(latestReply),
+    );
+  }
+  if (!latestUser && !latestReply) {
+    discussionElements.push(textElement('暂无新的讨论内容。', { secondary: true }));
+  }
+
+  const adviceItems = (items, fallback) => {
+    const selected = Array.isArray(items) ? items.filter((item) => sourceText(item)).slice(0, 2) : [];
+    return selected.length
+      ? selected.map((item) => `• ${markdown(item, '', 600, 1800)}`).join('\n')
+      : fallback;
+  };
+  const detailItems = Array.isArray(limitations)
+    ? limitations.filter((item) => sourceText(item)).slice(0, 3)
+    : [];
+  const revised = Number.isSafeInteger(state.version) && state.version > 0;
+  const candidateTitle = revised
+    ? `${retained ? '上一版' : '当前建议'} · 第${state.version}次修改`
+    : `${retained ? '上一版 · ' : ''}原建议`;
+  const decision = [
+    currentSaved ? '已保存' : '未保存',
+    currentDismissed ? '已暂不采纳' : '',
+  ].filter(Boolean).join('；');
+  const candidateElements = [
+    textElement(`**${candidateTitle}**`),
+    textElement(decision, { secondary: true }),
+    textElement(`**${markdown(summary, '暂无建议摘要，请查看下方分组内容。', 600, 2400)}**`),
+    textElement('**已做到**'),
+    textElement(adviceItems(strengths, '暂无可列出的具体亮点，可结合回答继续复盘。')),
+    textElement('**待改进**'),
+    textElement(adviceItems(improvements, '暂无单独列出的改进项。')),
+    textElement('**下一步**'),
+    textElement(markdown(nextAction, '暂无下一步建议，可先保留本次记录。', 600, 1800)),
+  ];
+  if (detailItems.length) {
+    candidateElements.push({
+      tag: 'collapsible_panel',
+      expanded: false,
+      header: { title: { tag: 'plain_text', content: '限制与说明' } },
+      background_color: 'grey-50',
+      padding: '8px',
+      elements: [
+        textElement(detailItems.map((item) => `• ${markdown(item, '', 600, 1200)}`).join('\n')),
+      ],
+    });
+  }
+  if (sourceText(state.originalSummary)) {
+    candidateElements.push({
+      tag: 'collapsible_panel',
+      expanded: false,
+      header: { title: { tag: 'plain_text', content: '原始点评' } },
+      background_color: 'grey-50',
+      padding: '8px',
+      elements: [textElement(markdown(state.originalSummary, '', 600, 1800))],
+    });
+  }
+
+  const elements = [
+    block(discussionElements),
+    block(candidateElements, 'blue-50'),
+  ];
+  if (state.canReply === true && !pending) {
+    elements.push({
+      tag: 'form',
+      name: 'advice_discussion_form',
+      direction: 'vertical',
+      vertical_spacing: '8px',
+      elements: [
+        {
+          tag: 'input',
+          name: 'advice_reply',
+          label: { tag: 'plain_text', content: '继续讨论' },
+          placeholder: { tag: 'plain_text', content: '哪里不清楚，或希望调整什么？' },
+          required: true,
+          input_type: 'multiline_text',
+          rows: 3,
+          max_length: 1000,
+          width: 'fill',
+        },
+        {
+          tag: 'button',
+          name: `discuss_${safeToken}`,
+          text: { tag: 'plain_text', content: '发送补充' },
+          type: 'default',
+          form_action_type: 'submit',
+          width: 'fill',
+        },
+      ],
+    });
+  }
+
+  const buttons = [
+    callbackButton(safeToken, 'save_advice', '保存建议', {
+      primary: true,
+      disabled: state.canSave !== true || pending || currentSaved,
+    }),
+    callbackButton(safeToken, 'dismiss_advice', '暂不采纳', {
+      disabled: currentDismissed || pending,
+    }),
+    callbackButton(safeToken, 'flashcards', '记忆闪卡'),
+  ];
+  if (state.canRetry === true && !pending) {
+    buttons.push(callbackButton(safeToken, 'retry_discussion', '重新请求'));
+  }
+  elements.push(actionRow(buttons));
+
+  return baseCard('回答建议', '基于本次回答的学习反馈', elements);
+}
+
 export function renderAdviceCard({
   summary,
   strengths = [],
@@ -258,7 +420,19 @@ export function renderAdviceCard({
   token,
   saved = false,
   dismissed = false,
+  discussion,
 } = {}) {
+  if (discussion !== undefined) {
+    return renderAdviceDiscussionCard({
+      summary,
+      strengths,
+      improvements,
+      nextAction,
+      limitations,
+      token,
+      discussion,
+    });
+  }
   const safeToken = tokenText(token);
   const adviceItems = (items, fallback) => {
     const selected = Array.isArray(items) ? items.filter((item) => sourceText(item)).slice(0, 2) : [];

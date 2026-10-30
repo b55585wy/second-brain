@@ -393,3 +393,20 @@ test('an unanswered interactive card permits long text reply fallback even with 
   assert.ok(result.attemptId); assert.equal(f.app.store.require('attempt', result.attemptId).output, answer);
   assert.equal(f.modelCalls(), 0);
 });
+
+test('redelivery of one stale callback stays closed after its resync advances the card version', async t => {
+  const f = await fixture(t); const originalToken = f.token(f.initial().id); await f.perform(f.form());
+  const incoming = f.event('flashcards', { token: originalToken }); await f.perform(incoming);
+  const state = f.initial(); const jobs = f.app.store.all('job').length; const outbox = f.app.store.all('feishu-chat-outbox').length;
+  await f.perform(incoming);
+  assert.equal(f.initial().version, state.version); assert.equal(f.app.store.all('job').length, jobs);
+  assert.equal(f.app.store.all('feishu-chat-outbox').length, outbox); assert.equal(f.modelCalls(), 0);
+});
+
+test('redelivered original submission cannot create a resync or another answer after card updates', async t => {
+  const f = await fixture(t); const incoming = f.form(); await f.perform(incoming);
+  const version = f.initial().version; const jobs = f.app.store.all('job').length; const outbox = f.app.store.all('feishu-chat-outbox').length;
+  await f.perform(incoming);
+  assert.equal(f.initial().version, version); assert.equal(f.app.store.all('job').length, jobs);
+  assert.equal(f.app.store.all('feishu-chat-outbox').length, outbox); assert.equal(f.app.store.all('attempt').length, 1); assert.equal(f.modelCalls(), 0);
+});

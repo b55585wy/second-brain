@@ -1,6 +1,6 @@
 import { FIELDS, SOURCE_FIELDS } from './dto.mjs';
 import { requireValue } from './errors.mjs';
-import { onlyFields, text, integer, choice, strings, timeZone, dateString, operationId } from './validation.mjs';
+import { onlyFields, text, integer, choice, strings, timeZone, dateString, operationId, digest } from './validation.mjs';
 import { referenceUrl } from './sources.mjs';
 
 const localId = value => { requireValue(typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value), '备份本地身份无效。'); };
@@ -72,6 +72,12 @@ function observation(value) {
   choice(value.finding, ['met', 'partial', 'not_met', 'not_assessed'], 'finding'); text(value.comment, 'comment', 4000, true); array(value.evidenceRefs, evidence, 50);
 }
 
+function discussionCandidate(value) {
+  shape(value, ['summary', 'observations', 'nextActions', 'limitations']);
+  text(value.summary, 'summary', 4000); array(value.observations, observation, 10);
+  strings(value.nextActions, 'nextActions', 10, 2000); strings(value.limitations, 'limitations', 10, 2000);
+}
+
 function rubric(value) {
   shape(value, ['id', 'label', 'description', 'expectedEvidence']); localId(value.id); text(value.label, 'label', 200); text(value.description, 'description', 2000);
   strings(value.expectedEvidence, 'expectedEvidence', 10, 500);
@@ -104,11 +110,28 @@ export function validateEntity(entity, value) {
     const fields = entity === 'attempts' ? [...FIELDS.attempts.filter(key => key !== 'feedback'), 'latestFeedbackId'] : FIELDS[entity];
     shape(value, fields); localId(value.id);
   }
-  if (['projects', 'knowledge', 'practices', 'outputs', 'focusArtifacts', 'adviceSelections'].includes(entity)) versioned(value);
+  if (['projects', 'knowledge', 'practices', 'outputs', 'focusArtifacts', 'adviceSelections', 'adviceDiscussions', 'adviceDiscussionTurns', 'adviceDiscussionVersions'].includes(entity)) versioned(value);
   if ('projectId' in value) nullable(value.projectId, localId);
   if ('sourceRefs' in value) array(value.sourceRefs, sourceRef, 50);
   if ('evidenceRefs' in value) array(value.evidenceRefs, evidence, 50);
   switch (entity) {
+    case 'adviceDiscussions':
+      localId(value.feedbackId); localId(value.attemptId); count(value.currentVersion); nullable(value.lastTurnId, localId);
+      requireValue(value.id === value.feedbackId, '讨论身份不匹配。'); break;
+    case 'adviceDiscussionTurns':
+      localId(value.feedbackId); localId(value.attemptId); count(value.baseVersion); operationId(value.operationId);
+      nullable(value.retryOfTurnId, localId); text(value.message, 'message', 1000);
+      choice(value.status, ['queued', 'running', 'ready', 'failed', 'uncertain', 'limited', 'off', 'unavailable', 'stale'], 'discussion status');
+      nullable(value.reply, item => text(item, 'reply', 800)); nullable(value.resultVersion, count); nullable(value.lastError, error);
+      requireValue(value.resultVersion === null || value.resultVersion === value.baseVersion + 1, '讨论结果版本无效。');
+      requireValue(value.status !== 'ready' || value.reply !== null && value.resultVersion !== null, '已完成讨论缺少回复或结果版本。'); break;
+    case 'adviceDiscussionVersions':
+      localId(value.feedbackId); localId(value.attemptId); count(value.version); discussionCandidate(value.candidate);
+      nullable(value.reply, item => text(item, 'reply', 800)); nullable(value.turnId, localId); nullable(value.outputId, localId);
+      nullable(value.decision, item => choice(item, ['saved', 'dismissed'], 'decision')); nullable(value.selectedAt, instant);
+      requireValue(value.id === `dv_${digest([value.feedbackId, value.version]).slice(0, 48)}`, '讨论建议版本身份无效。');
+      requireValue(value.version === 0 ? value.turnId === null : value.turnId !== null && value.reply !== null, '讨论版本缺少对应轮次。');
+      requireValue((value.decision === null) === (value.selectedAt === null) && (value.decision !== 'saved' || value.outputId !== null), '讨论采纳状态无效。'); break;
     case 'adviceSelections':
       localId(value.feedbackId); localId(value.attemptId); nullable(value.outputId, localId); instant(value.selectedAt);
       choice(value.state, ['saved', 'dismissed'], 'state');
@@ -152,7 +175,7 @@ export function validateEntity(entity, value) {
       for (const key of ['sessionId', 'presentationId', 'knowledgeId']) localId(value[key]); externalId(value.cardId); choice(value.rating, ['again', 'hard', 'good', 'easy'], 'rating'); integer(value.elapsedMs, 'elapsedMs', 0, 3600000); operationId(value.operationId); choice(value.status, ['confirmed'], 'status'); instant(value.committedAt);
       shape(value.riffEvidence, ['method', 'externalResponseId', 'checkedAt']); choice(value.riffEvidence.method, ['response', 'read_after_write'], 'method'); nullable(value.riffEvidence.externalResponseId, externalId); instant(value.riffEvidence.checkedAt); break;
     case 'jobHistory':
-      shape(value, ['id', 'type', 'trigger', 'status', 'commitState', 'operationId', 'progress', 'createdAt', 'updatedAt', 'finishedAt', 'error']); localId(value.id); choice(value.type, ['codex_sync', 'manual_dialogue_import', 'source_import', 'knowledge_sync', 'daily_plan_generate', 'practice_feedback', 'answer_advice', 'feishu_card_action', 'review_response', 'reconcile', 'learning_automation'], 'type'); choice(value.trigger, ['user', 'scheduler', 'recovery', 'automatic'], 'trigger');
+      shape(value, ['id', 'type', 'trigger', 'status', 'commitState', 'operationId', 'progress', 'createdAt', 'updatedAt', 'finishedAt', 'error']); localId(value.id); choice(value.type, ['codex_sync', 'manual_dialogue_import', 'source_import', 'knowledge_sync', 'daily_plan_generate', 'practice_feedback', 'answer_advice', 'advice_discussion', 'feishu_card_action', 'review_response', 'reconcile', 'learning_automation'], 'type'); choice(value.trigger, ['user', 'scheduler', 'recovery', 'automatic'], 'trigger');
       choice(value.status, ['queued', 'running', 'succeeded', 'failed', 'blocked', 'uncertain', 'cancelled'], 'status'); choice(value.commitState, ['not_applicable', 'not_started', 'may_have_committed', 'confirmed', 'not_committed'], 'commitState'); operationId(value.operationId);
       shape(value.progress, ['completed', 'total', 'unit']); count(value.progress.completed); nullable(value.progress.total, count); requireValue(value.progress.total === null || value.progress.completed <= value.progress.total, '作业进度无效。'); choice(value.progress.unit, ['threads', 'messages', 'items', 'steps'], 'unit'); instant(value.createdAt); instant(value.updatedAt); nullable(value.finishedAt, instant); nullable(value.error, error); break;
   }

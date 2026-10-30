@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { boolean, dateInZone, digest, onlyFields, text } from './validation.mjs';
-import { fail, requireValue } from './errors.mjs';
+import { fail, publicError, requireValue } from './errors.mjs';
 import { adviceMessage } from './advice-message.mjs';
 
 const DEFAULTS = { enabled: false, remindersEnabled: true, reminderLocalTime: '09:00', cardsEnabled: false };
@@ -9,6 +9,7 @@ const identifier = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,200}$
 const pairText = value => value.replace(/-/g, '').toUpperCase();
 const uuid = value => { const hash = digest(value); return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`; };
 const at = value => value ? +new Date(value) : 0;
+const discussionVersionLabel = version => version === 0 ? '原建议' : `第${version}次修改`;
 
 export class FeishuChat {
   constructor(store, settings, secrets, domain, automation, learning, { clock = () => new Date() } = {}) {
@@ -27,6 +28,16 @@ export class FeishuChat {
   identity() { const config = this.settings.raw().feishu; return digest([config.apiBase, config.appId, this.secrets.get('feishu.appSecret')]); }
   configured() { const config = this.settings.raw().feishu; return !!(config.enabled && config.appId && this.secrets.get('feishu.appSecret')); }
   binding() { const value = this.store.get('feishu-chat-binding', 'main'); return value?.appIdentity === this.identity() ? value : null; }
+  discussionChannel(cardsRequired = false) {
+    const binding = this.binding();
+    return { appIdentity: this.identity(), bindingEpoch: binding?.epoch, userId: binding?.userId, chatId: binding?.chatId, cardsRequired };
+  }
+  discussionChannelCurrent(channel) {
+    const binding = this.binding();
+    return !!(this.config().enabled && this.configured() && binding && channel.appIdentity === this.identity()
+      && channel.bindingEpoch === binding.epoch && channel.userId === binding.userId && channel.chatId === binding.chatId
+      && (!channel.cardsRequired || this.config().cardsEnabled));
+  }
   error(code, message, retryable) { this.saveState({ lastError: { code, message, retryable } }); }
 
   public() {
@@ -142,6 +153,7 @@ export class FeishuChat {
       return this.reply(inbox, '好的，30 分钟后再提醒；发送“暂停”可停止提醒。');
     }
     if (['今日练习', '开始学习', '开始复习', '开始', '复习'].includes(command)) {
+      this.saveState({ activeDiscussion: null });
       const interactive = this.config().cardsEnabled && !!this.cards;
       const result = this.sendToday({ interactive }); this.complete(inbox);
       if (!result.queued && !(interactive && result.alreadySent)) this.queueReply(inbox.id, this.sendMessage(result));
@@ -150,7 +162,47 @@ export class FeishuChat {
     if (['点评', '回答建议', '给点建议', 'advice'].includes(command)) return this.requestAdvice(inbox, false);
     if (['重新点评', '重试点评'].includes(command)) return this.requestAdvice(inbox, true);
     if (['帮助', 'help'].includes(command)) return this.reply(inbox, '发送“今日练习”开始；直接回复题目作答。“独立：”“提示：”可注明辅助程度，未注明时记录为未知。发送“点评”查看回答建议；失败后可用“重新点评”。也可以发送“稍后”“暂停”或“继续”。');
-    return this.answer(message, inbox);
+    const discussion = this.routeDiscussion(message, inbox);
+    return discussion ?? this.answer(message, inbox);
+  }
+
+  discussionTarget(message) {
+    if (!this.discussion) return null;
+    if (!message.replyToMessageId) {
+      const active = this.state().activeDiscussion; const today = this.automation.today();
+      if (today.practice && !today.attempt && !active?.explicit) { if (active) this.saveState({ activeDiscussion: null }); return null; }
+      if (!today.attempt && !active?.explicit) return null;
+      return active && this.discussionChannelCurrent(active) ? active : null;
+    }
+    const card = this.store.all('feishu-card').find(row => row.messageId === message.replyToMessageId && row.feedbackId);
+    if (card && card.section !== 'advice') return null;
+    const sent = this.store.all('feishu-chat-outbox').find(row => row.messageId === message.replyToMessageId && row.status === 'sent'
+      && ['advice', 'advice_discussion'].includes(row.purpose));
+    if (!card && !sent) return null;
+    const source = card ?? sent;
+    const target = { feedbackId: card?.feedbackId ?? sent.feedbackId, appIdentity: source.appIdentity, bindingEpoch: source.bindingEpoch,
+      userId: card?.userId ?? this.binding()?.userId, chatId: source.chatId, messageId: message.replyToMessageId, explicit: true };
+    if (!target.feedbackId || !this.discussionChannelCurrent(target)) return { invalid: true };
+    return target;
+  }
+  routeDiscussion(message, inbox) {
+    const target = this.discussionTarget(message); if (!target) return null;
+    if (target.invalid) return this.reply(inbox, '这条建议属于旧连接或绑定，请重新打开建议。');
+    try {
+      const current = this.discussion.public(target.feedbackId);
+      if (['好', '好的', 'OK', 'ok', '收到', '谢谢'].includes(message.content)) return this.reply(inbox,
+        current.saved ? '当前版本已经保存；继续讨论不会自动覆盖已保存内容。' : '满意后点击保存建议；当前未自动保存。');
+      const result = this.discussion.submit(target.feedbackId, { message: message.content, expectedVersion: current.version,
+        operationId: `discussion_text_${digest([this.identity(), message.messageId]).slice(0, 48)}`, channel: this.discussionChannel() });
+      const feedback = this.store.require('feedback', target.feedbackId); const attempt = this.store.require('attempt', feedback.attemptId);
+      const today = this.automation.today();
+      this.store.put('feishu-chat-inbox', { ...inbox, status: 'discussion_pending', feedbackId: target.feedbackId, attemptId: attempt.id,
+        practiceId: attempt.practiceId, discussionTurnId: result.pendingTurnId, practiceContext: today.practice?.id === attempt.practiceId && today.attempt?.id === attempt.id
+          ? this.context(today) : digest(this.learning.advice.material(attempt.id).context) }, inbox.id);
+      this.saveState({ activeDiscussion: { ...target, ...this.discussionChannel(), explicit: !!target.explicit } });
+      this.queueReply(inbox.id + ':discussion', `正在讨论${discussionVersionLabel(current.version)}；完成后请明确点击保存，当前未自动保存。`);
+      return { accepted: true, discussion: true, feedbackId: target.feedbackId, version: current.version };
+    } catch (error) { return this.reply(inbox, publicError(error).body.error.message); }
   }
 
   requestAdvice(inbox, retry) {
@@ -176,6 +228,22 @@ export class FeishuChat {
     if (!today.practice || (today.attempt && !learningCard)) return { queued: false, alreadySent: false, practiceId: today.practice?.id ?? null, completed: !!today.attempt };
     const item = learningCard ? this.queueLearningCard(today) : this.queuePractice(today, interactive ? 'interactive' : 'daily');
     return { queued: item.status === 'pending' || item.status === 'sending', alreadySent: item.status === 'sent', practiceId: today.practice.id, deliveryState: item.status };
+  }
+
+  openDiscussion(feedbackId) {
+    this.assertEnabled();
+    if (!this.binding()) fail(409, 'INVALID_STATE', '请先绑定飞书私聊。');
+    if (!this.config().cardsEnabled || !this.cards || !this.discussion) fail(409, 'INVALID_STATE', '请先启用飞书互动卡片。');
+    const feedback = this.store.require('feedback', text(feedbackId, 'feedbackId', 128));
+    const material = this.learning.advice.material(feedback.attemptId); const current = this.discussion.public(feedback.id);
+    const today = this.automation.today(); const practiceContext = today.practice?.id === material.practice.id && today.attempt?.id === material.attempt.id
+      ? this.context(today) : digest(material.context);
+    const item = this.queue(`open-discussion:${feedback.id}:v${current.version}`, `回答建议｜${discussionVersionLabel(current.version)}\n${current.candidate.summary}\n\n可继续讨论；满意后点击保存建议，当前不会自动保存。`, {
+      purpose: 'advice_discussion', feedbackId: feedback.id, attemptId: material.attempt.id, practiceId: material.practice.id,
+      practiceContext, discussionVersion: current.version, explicitDiscussion: true });
+    const decorated = this.cards.decorateAdvice(item, { attemptId: material.attempt.id, practiceId: material.practice.id, practiceContext }, { feedback });
+    return { queued: ['pending', 'sending'].includes(decorated.status), alreadySent: decorated.status === 'sent',
+      feedbackId: feedback.id, version: current.version, practiceId: material.practice.id, deliveryState: decorated.status };
   }
 
   sendMessage(result) {
@@ -263,6 +331,22 @@ export class FeishuChat {
     }
   }
 
+  finishDiscussions() {
+    if (!this.discussion) return;
+    for (const inbox of this.store.all('feishu-chat-inbox').filter(row => row.status === 'discussion_pending')) {
+      const turn = this.store.get('advice-discussion-turn', inbox.discussionTurnId);
+      if (turn && ['queued', 'running'].includes(turn.status)) continue;
+      if (!this.discussionChannelCurrent({ ...inbox, userId: this.binding()?.userId })) { this.complete(inbox); continue; }
+      const current = this.discussion.public(inbox.feedbackId);
+      if (current.status === 'stale') { this.reply(inbox, current.message); continue; }
+      const item = this.queue(`discussion:${inbox.id}`, `${discussionVersionLabel(current.version)}\n${current.reply ?? current.message}\n\n${current.candidate.summary}\n\n确认后点击保存建议，当前未自动保存。`, {
+        purpose: 'advice_discussion', feedbackId: inbox.feedbackId, attemptId: inbox.attemptId, practiceId: inbox.practiceId,
+        practiceContext: inbox.practiceContext, discussionVersion: current.version });
+      if (this.config().cardsEnabled && this.cards) this.cards.decorateAdvice(item, inbox, { feedback: this.store.require('feedback', inbox.feedbackId) });
+      this.complete(inbox);
+    }
+  }
+
   acknowledgeAdvice(inbox) {
     if (inbox.adviceAcknowledged || this.binding()?.epoch !== inbox.bindingEpoch || inbox.appIdentity !== this.identity()) return;
     this.store.transaction(() => {
@@ -282,7 +366,7 @@ export class FeishuChat {
     }
     if (state?.status === 'ready' && state.feedback?.mode === 'model') {
       const item = this.queue(`advice:${inbox.id}`, adviceMessage(state.feedback), { purpose: 'advice', attemptId: inbox.attemptId,
-        practiceId: inbox.practiceId, practiceContext: inbox.practiceContext });
+        feedbackId: state.feedback.id, practiceId: inbox.practiceId, practiceContext: inbox.practiceContext });
       if (this.config().cardsEnabled && this.cards) this.cards.decorateAdvice(item, inbox, state);
       return;
     }
@@ -311,6 +395,10 @@ export class FeishuChat {
     if (!this.recipientCurrent(item)) return false;
     if (item.purpose === 'card_update') return this.config().cardsEnabled && !!this.cards?.deliverable(item);
     if (item.purpose === 'learning_card') return this.learningCardCurrent(item) && this.cards.deliverable(item);
+    if (item.purpose === 'advice_discussion') {
+      try { const current = this.discussion?.public(item.feedbackId); return !!current && current.status !== 'stale'
+        && current.version === item.discussionVersion && (!item.cardId || this.cards.deliverable(item)); } catch { return false; }
+    }
     if (item.configRevision !== this.config().revision) return false;
     if (item.purpose === 'advice') return this.feedbackCurrent(item);
     return item.purpose !== 'practice' || this.practiceCurrent(item);
@@ -321,6 +409,7 @@ export class FeishuChat {
     this.draining = true;
     try {
       await this.finishFeedback();
+      this.finishDiscussions();
       await this.cards?.flush();
       const queue = this.store.all('feishu-chat-outbox').filter(item => item.status === 'pending' && at(item.nextAttemptAt) <= +this.clock()).reverse().slice(0, 25);
       for (const item of queue) await this.deliver(item, send);
@@ -358,7 +447,15 @@ export class FeishuChat {
     this.store.put('feishu-chat-outbox', { ...item, status: 'sent', messageId, sentAt }, item.id);
     this.saveState({ lastSentAt: sentAt, lastError: null });
     if (item.cardId) this.cards?.confirm(item, messageId);
+    const card = item.cardId ? this.store.get('feishu-card', item.cardId) : null;
+    const feedbackId = card?.section === 'advice' ? card.feedbackId : ['advice', 'advice_discussion'].includes(item.purpose) ? item.feedbackId : null;
+    if (feedbackId && this.discussion && this.recipientCurrent(item)) {
+      const previous = this.state().activeDiscussion;
+      this.saveState({ activeDiscussion: { ...this.discussionChannel(), feedbackId, messageId,
+        explicit: !!item.explicitDiscussion || previous?.feedbackId === feedbackId && !!previous.explicit } });
+    }
     if (!['practice', 'learning_card'].includes(item.purpose) || !this.recipientCurrent(item) || !this.practiceCurrent(item)) return;
+    if (this.state().activeDiscussion && !this.state().activeDiscussion.explicit) this.saveState({ activeDiscussion: null });
     const delivery = { outboxId: item.id, practiceId: item.practiceId, context: item.context, bindingEpoch: item.bindingEpoch, messageId, sentAt };
     this.store.put('feishu-chat-delivery', delivery, digest([this.identity(), messageId]));
     this.saveState({ pendingPractice: delivery });

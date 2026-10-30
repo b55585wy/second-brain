@@ -102,6 +102,7 @@ export class Advice {
     const { attempt, practice, sources } = material; let remaining = 2500;
     const evidenceSnapshots = [];
     for (const { source, ref } of sources.slice(0, 4)) {
+      if (typeof source.content !== 'string') continue;
       const quoted = ref.excerpt && source.content.includes(ref.excerpt) ? ref.excerpt : source.content;
       const text = truncate(quoted, Math.min(1000, remaining)); remaining -= length(text);
       if (text) evidenceSnapshots.push({ sourceId: source.id, text });

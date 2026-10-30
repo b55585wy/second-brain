@@ -6,6 +6,7 @@ export const FIELDS = {
   practices: ['id', 'projectId', 'kind', 'goal', 'skill', 'prompt', 'estimatedMinutes', 'rubric', 'sourceRefs', 'provenance', 'status', 'revision', 'createdAt', 'updatedAt'],
   attempts: ['id', 'practiceId', 'output', 'assistanceLevel', 'evidenceRefs', 'evidenceSnapshots', 'submittedAt', 'feedback'],
   feedback: ['id', 'attemptId', 'mode', 'basis', 'summary', 'observations', 'nextActions', 'limitations', 'provenance', 'createdAt'],
+  adviceSelections: ['id', 'feedbackId', 'attemptId', 'state', 'outputId', 'selectedAt', 'revision', 'createdAt', 'updatedAt'],
   outputs: ['id', 'projectId', 'practiceId', 'title', 'content', 'goal', 'status', 'sourceRefs', 'evidenceRefs', 'revision', 'createdAt', 'updatedAt'],
   plans: ['id', 'revision', 'date', 'timeZone', 'profileRevision', 'budgetMinutes', 'scheduledMinutes', 'unallocatedMinutes', 'reviewDueCount', 'status', 'items', 'notices', 'generationJobId', 'createdAt', 'updatedAt'],
   reviewSessions: ['id', 'projectId', 'deckId', 'limit', 'reviewedCount', 'status', 'pendingJobId', 'lastResponseId', 'createdAt', 'updatedAt'],

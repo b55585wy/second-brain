@@ -1,12 +1,12 @@
 import type {
-  CodexScope, CodexScopeInput, CodexThread, EvidenceRef, ExportArtifact, Feedback, FeishuChatEntry, FeishuChatInput, FeishuChatPair,
+  AdviceSettingsInput, CodexScope, CodexScopeInput, CodexThread, EvidenceRef, ExportArtifact, Feedback, FeishuChatEntry, FeishuChatInput, FeishuChatPair,
   FeishuChatSendToday, FeishuChatStatus, FeishuRegistrationStatus, Job, JobAck, LearningProfile, LearningProfileInput, ListData, ManualDialogueInput,
   Output, OutputInput, PracticeAttempt, Project, ReviewSession, Settings, SettingsInput,
   SiyuanInput, SourceRef, SourceRefInput,
 } from '../types';
 import type { Checkpoint } from '../types';
 import {
-  normalizeAttempt, normalizeAutomation, normalizeConnections, normalizeDailyPlan, normalizeDashboard,
+  normalizeAdviceSettings, normalizeAdviceState, normalizeAttempt, normalizeAutomation, normalizeConnections, normalizeDailyPlan, normalizeDashboard,
   normalizeJob, normalizeKnowledge, normalizeKnowledgeList, normalizePracticeList,
   normalizeProfile, normalizeReviewAnswer, normalizeReviewPrompt, normalizeToday,
 } from './adapters';
@@ -29,8 +29,8 @@ function isFields(value: unknown): value is Fields {
 }
 
 function remember(path: string, value: unknown): void {
-  if (!isFields(value)) return;
-  if (typeof value.revision === 'number') revisions.set(path, value.revision);
+  if (!isFields(value) || typeof value.revision !== 'number') return;
+  if (path !== '/advice-settings' || value.revision >= (revisions.get(path) ?? -Infinity)) revisions.set(path, value.revision);
 }
 
 function rememberConnections(value: unknown): void {
@@ -52,10 +52,11 @@ function rememberRecords(path: string, value: unknown): void {
 
 function captureRevisions(path: string, value: unknown): void {
   const pathname = path.split('?')[0];
-  if (['/learning-profile', '/settings', '/connections/codex/scope', '/daily-plan', '/automation', '/feishu-chat'].includes(pathname)) remember(pathname, value);
+  if (['/learning-profile', '/settings', '/connections/codex/scope', '/daily-plan', '/automation', '/feishu-chat', '/advice-settings'].includes(pathname)) remember(pathname, value);
   if (pathname === '/today' && isFields(value)) {
     remember('/learning-profile', value.profile);
     remember('/automation', value.automation);
+    remember('/advice-settings', value.adviceSettings);
     if (isFields(value.practice) && typeof value.practice.id === 'string') remember(`/practices/${value.practice.id}`, value.practice);
     if (isFields(value.attempt) && typeof value.attempt.id === 'string') remember(`/attempts/${value.attempt.id}`, value.attempt);
   }
@@ -192,6 +193,10 @@ export const api = {
   automation: async () => normalizeAutomation(await get<unknown>('/automation')),
   saveAutomation: async (enabled: boolean, revision: number, id = operationId()) => normalizeAutomation(await put<unknown>('/automation', { operationId: id, expectedRevision: revision, enabled })),
   today: async () => normalizeToday(await get<unknown>('/today')),
+  adviceSettings: async () => normalizeAdviceSettings(await get<unknown>('/advice-settings')),
+  saveAdviceSettings: async (body: AdviceSettingsInput, revision?: number, id = operationId()) => normalizeAdviceSettings(await put<unknown>('/advice-settings', versioned('/advice-settings', { operationId: id, enabled: body.enabled, dailyCallLimit: body.dailyCallLimit }, revision))),
+  advice: async (attemptId: string) => normalizeAdviceState(await get<unknown>(`/attempts/${encodeURIComponent(attemptId)}/advice`)),
+  requestAdvice: async (attemptId: string, id = operationId(), retry = false) => normalizeAdviceState(await post<unknown>(`/attempts/${encodeURIComponent(attemptId)}/advice`, { operationId: id, ...(retry ? { retry: true } : {}) })),
   dashboard: async () => normalizeDashboard(await get<unknown>('/dashboard')),
   dailyPlan: async (date: string) => normalizeDailyPlan(await get<unknown>(`/daily-plan?date=${encodeURIComponent(date)}`)),
   generateDailyPlan: async (date: string, profileRevision?: number, planRevision?: number) => {
@@ -261,7 +266,10 @@ export const api = {
   feishuChatEntry: () => get<FeishuChatEntry>('/feishu-chat/entry'),
   feishuRegistration: () => get<FeishuRegistrationStatus>('/feishu-chat/registration'),
   startFeishuRegistration: (id = operationId()) => post<FeishuRegistrationStatus>('/feishu-chat/registration', { operationId: id }),
-  saveFeishuChat: (body: FeishuChatInput, revision: number, id = operationId()) => put<FeishuChatStatus>('/feishu-chat', { operationId: id, expectedRevision: revision, enabled: body.enabled, remindersEnabled: body.remindersEnabled, reminderLocalTime: body.reminderLocalTime }),
+  feishuCardRegistration: () => get<FeishuRegistrationStatus>('/feishu-chat/cards/registration'),
+  startFeishuCardRegistration: (id = operationId()) => post<FeishuRegistrationStatus>('/feishu-chat/cards/registration', { operationId: id }),
+  cancelFeishuCardRegistration: (id = operationId()) => post<FeishuRegistrationStatus>('/feishu-chat/cards/registration/cancel', { operationId: id }),
+  saveFeishuChat: (body: FeishuChatInput, revision: number, id = operationId()) => put<FeishuChatStatus>('/feishu-chat', { operationId: id, expectedRevision: revision, enabled: body.enabled, remindersEnabled: body.remindersEnabled, reminderLocalTime: body.reminderLocalTime, ...(typeof body.cardsEnabled === 'boolean' ? { cardsEnabled: body.cardsEnabled } : {}) }),
   pairFeishuChat: (id = operationId()) => post<FeishuChatPair>('/feishu-chat/pair', { operationId: id }),
   sendFeishuToday: (id = operationId()) => post<FeishuChatSendToday>('/feishu-chat/send-today', { operationId: id }),
   exportDownload: async (scope: 'all' | 'projects' = 'all', projectIds: string[] = []) => {

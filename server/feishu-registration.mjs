@@ -16,6 +16,8 @@ const ERRORS = {
   REGISTRATION_CONFIG_CHANGED: ['飞书配置已被修改，本次扫码结果未保存，请重新开始。', true],
   REGISTRATION_SAVE_FAILED: ['无法保存飞书应用凭据，请检查本地存储后重试。', true],
   REGISTRATION_FAILED: ['暂时无法完成飞书注册，请稍后重试。', true],
+  REGISTRATION_APP_REQUIRED: ['请先连接飞书，再为当前机器人启用交互卡片。', false],
+  REGISTRATION_SECRET_CHANGED: ['授权回执与当前应用凭据不一致，原配置和绑定已保留，请核对应用后再授权。', false],
 };
 
 function errorCode(error) {
@@ -53,12 +55,13 @@ export class FeishuRegistration {
   #session = null;
   #view = { ...IDLE };
 
-  constructor(settings, secrets, { registerAppFactory = registerApp, clock = Date.now, onConfigured } = {}) {
+  constructor(settings, secrets, { registerAppFactory = registerApp, clock = Date.now, onConfigured, cardActions = false } = {}) {
     this.settings = settings;
     this.secrets = secrets;
     this.registerAppFactory = registerAppFactory;
     this.clock = clock;
     this.onConfigured = onConfigured;
+    this.cardActions = cardActions;
   }
 
   public() {
@@ -69,9 +72,16 @@ export class FeishuRegistration {
   start() {
     this.#expire();
     if (this.#session) return this.public();
+    const appId = this.settings.raw().feishu.appId;
+    if (this.cardActions && (!appId || !this.secrets.get('feishu.appSecret'))) {
+      const [message, retryable] = ERRORS.REGISTRATION_APP_REQUIRED;
+      this.#view = { ...IDLE, state: 'error', message, error: { code: 'REGISTRATION_APP_REQUIRED', message, retryable } };
+      return this.public();
+    }
     const session = {
       controller: new AbortController(), timer: null, expiresAt: null,
       preparationDeadline: this.clock() + PREPARATION_TIMEOUT_MS, qrVersion: 0, qrTask: Promise.resolve(),
+      appId: this.cardActions ? appId : null,
     };
     this.#session = session;
     this.#view = { ...IDLE, state: 'starting', message: '正在准备飞书注册二维码…' };
@@ -138,7 +148,8 @@ export class FeishuRegistration {
       const qrDataUrl = await QRCode.toDataURL(url, { errorCorrectionLevel: 'M', margin: 2, width: 320 });
       this.#expire();
       if (!this.#current(session) || version !== session.qrVersion) return;
-      this.#view = { state: 'waiting', url, qrDataUrl, expiresAt, message: '请使用飞书扫码，并确认创建应用和授权。', error: null };
+      this.#view = { state: 'waiting', url, qrDataUrl, expiresAt,
+        message: this.cardActions ? '请使用飞书扫码，为当前机器人启用卡片回调。' : '请使用飞书扫码，并确认创建应用和授权。', error: null };
     } catch (error) { this.#fail(session, errorCode(error)); }
   }
 
@@ -146,12 +157,12 @@ export class FeishuRegistration {
     if (!this.#current(session)) return;
     try {
       const result = await this.registerAppFactory({
-        createOnly: true,
-        appPreset: { name: '知行学习', desc: '个人目标学习与练习' },
+        ...(this.cardActions ? { appId: session.appId } : { createOnly: true, appPreset: { name: '知行学习', desc: '个人目标学习与练习' } }),
         addons: {
           preset: false,
           scopes: { tenant: ['im:message.p2p_msg:readonly', 'im:message:send_as_bot'] },
           events: { items: { tenant: ['im.message.receive_v1'] } },
+          ...(this.cardActions ? { callbacks: { items: ['card.action.trigger'] } } : {}),
         },
         signal: session.controller.signal,
         onQRCodeReady: (info) => {
@@ -163,9 +174,16 @@ export class FeishuRegistration {
       this.#expire();
       if (!this.#current(session)) return;
       if (configurationFingerprint(this.settings, this.secrets) !== session.fingerprint) throw registrationError('REGISTRATION_CONFIG_CHANGED');
-      if (!credentialsValid(result)) throw registrationError('REGISTRATION_RESPONSE_INVALID');
-      this.#save(result);
-      this.#finish(session, 'complete', '飞书应用已保存，正在连接，请按提示绑定私聊。');
+      if (this.cardActions) {
+        if (result?.client_id !== session.appId) throw registrationError('REGISTRATION_RESPONSE_INVALID');
+        if (result.client_secret !== this.secrets.get('feishu.appSecret')) throw registrationError('REGISTRATION_SECRET_CHANGED');
+      } else {
+        if (!credentialsValid(result)) throw registrationError('REGISTRATION_RESPONSE_INVALID');
+        this.#save(result);
+      }
+      this.#finish(session, 'complete', this.cardActions
+        ? '卡片授权已完成，原机器人和私聊绑定保留。请在飞书点击卡片按钮确认交互。'
+        : '飞书应用已保存，正在连接，请按提示绑定私聊。');
       try { await this.onConfigured?.(); } catch { /* Saved credentials remain valid if connecting fails. */ }
     } catch (error) { this.#fail(session, errorCode(error)); }
   }

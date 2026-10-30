@@ -1,8 +1,9 @@
 import { choice, now, text, digest } from './validation.mjs';
 import { ApiError, fail, requireValue } from './errors.mjs';
+import { RIFF_VERSION, RIFF_SUPPORTED_VERSIONS, riffCompatible } from './siyuan-version.mjs';
 
-export const RIFF_VERSION = '3.8.8';
-// SiYuan v3.8.8 kernel/go.mod pins riff commit 228528e70754; store.go defines these values.
+export { RIFF_VERSION } from './siyuan-version.mjs';
+// Verified 3.8.8/3.8.9 review APIs share these Riff rating values.
 export const RIFF_RATINGS = Object.freeze({ again: 1, forgot: 1, hard: 2, good: 3, easy: 4 });
 const sqlLiteral = value => `'${String(value).replaceAll("'", "''")}'`;
 const blockId = value => { requireValue(typeof value === 'string' && /^\d{14}-[a-z0-9]{7}$/.test(value), 'SiYuan block ID 无效。'); return value; };
@@ -38,9 +39,10 @@ export class Siyuan {
       this.assertEpoch(epoch);
       const version = typeof data === 'string' ? data : data?.version;
       requireValue(typeof version === 'string', 'SiYuan 未返回版本。');
-      const result = { status: version === RIFF_VERSION ? 'connected' : 'incompatible', version, checkedAt: now(), connectionEpoch: epoch };
+      const compatible = riffCompatible(version);
+      const result = { status: compatible ? 'connected' : 'incompatible', version, checkedAt: now(), connectionEpoch: epoch };
       this.store.put('config', result, 'siyuan-check');
-      return { ...result, riffCompatible: version === RIFF_VERSION, supportedVersion: RIFF_VERSION };
+      return { ...result, riffCompatible: compatible, supportedVersion: RIFF_VERSION };
     } catch (error) {
       const config = this.settings.siyuan();
       if (config.baseUrl && config.connectionEpoch === epoch) this.store.put('config', { status: 'unavailable', version: null, checkedAt: now(), connectionEpoch: epoch }, 'siyuan-check');
@@ -50,7 +52,7 @@ export class Siyuan {
 
   async compatible(epoch = this.epoch()) {
     const result = await this.check(epoch);
-    if (!result.riffCompatible) fail(503, 'RIFF_INCOMPATIBLE', `记忆复习要求 SiYuan ${RIFF_VERSION}。`);
+    if (!result.riffCompatible) fail(503, 'RIFF_INCOMPATIBLE', `记忆复习要求已验证的 SiYuan ${RIFF_SUPPORTED_VERSIONS.join(' 或 ')}。`);
     return result;
   }
 

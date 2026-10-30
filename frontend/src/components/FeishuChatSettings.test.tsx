@@ -8,7 +8,7 @@ import type { FeishuChatSendToday, FeishuChatStatus } from '../types';
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>();
   return { ...actual, api: {
-    feishuChat: vi.fn(), feishuChatEntry: vi.fn(), feishuRegistration: vi.fn(), startFeishuRegistration: vi.fn(), saveFeishuChat: vi.fn(), pairFeishuChat: vi.fn(), sendFeishuToday: vi.fn(),
+    feishuChat: vi.fn(), feishuChatEntry: vi.fn(), feishuRegistration: vi.fn(), startFeishuRegistration: vi.fn(), feishuCardRegistration: vi.fn(), startFeishuCardRegistration: vi.fn(), cancelFeishuCardRegistration: vi.fn(), saveFeishuChat: vi.fn(), pairFeishuChat: vi.fn(), sendFeishuToday: vi.fn(),
   } };
 });
 
@@ -37,6 +37,9 @@ beforeEach(() => {
   vi.mocked(api.feishuChatEntry).mockResolvedValue({ url: null, qrDataUrl: null });
   vi.mocked(api.feishuRegistration).mockResolvedValue({ state: 'idle', url: null, qrDataUrl: null, expiresAt: null, message: '', error: null });
   vi.mocked(api.startFeishuRegistration).mockResolvedValue({ state: 'waiting', url: 'https://example.test/authorize', qrDataUrl: 'data:image/png;base64,SYNTHETIC', expiresAt: '2099-01-01T00:00:00.000Z', message: '请扫码', error: null });
+  vi.mocked(api.feishuCardRegistration).mockResolvedValue({ state: 'idle', url: null, qrDataUrl: null, expiresAt: null, message: '', error: null });
+  vi.mocked(api.startFeishuCardRegistration).mockResolvedValue({ state: 'waiting', url: 'https://example.test/cards/authorize', qrDataUrl: 'data:image/png;base64,CARD-SYNTHETIC', expiresAt: '2099-01-01T00:00:00.000Z', message: '请扫码', error: null });
+  vi.mocked(api.cancelFeishuCardRegistration).mockResolvedValue({ state: 'idle', url: null, qrDataUrl: null, expiresAt: null, message: '', error: null });
   vi.mocked(api.saveFeishuChat).mockImplementation(async (body, revision) => ({ ...status, ...body, revision: revision + 1 }));
   vi.mocked(api.pairFeishuChat).mockResolvedValue({ code: 'TEST42', expiresAt: '2026-10-29T12:00:00.000Z' });
   vi.mocked(api.sendFeishuToday).mockResolvedValue({ queued: true, alreadySent: false, practiceId: 'practice-synthetic' });
@@ -427,5 +430,76 @@ describe('飞书绑定与发送命令', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('发送命令失败');
     expect(time).toHaveValue('17:55');
     expect(screen.getByText('机器人已连接')).toBeVisible();
+  });
+});
+
+describe('可选学习卡片授权与按钮确认', () => {
+  it('旧状态缺少 cardsEnabled 时完全隐藏卡片区，也不读取卡片注册状态', async () => {
+    render(<FeishuChatSettings />);
+    expect(await screen.findByText('机器人已连接')).toBeVisible();
+    expect(screen.queryByRole('heading', { name: '学习卡片' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '启用学习卡片' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '扫码启用学习卡片' })).not.toBeInTheDocument();
+    expect(api.feishuCardRegistration).not.toHaveBeenCalled();
+  });
+
+  it('能力可用但未启用时只显示一个显式卡片授权入口，挂载不 POST', async () => {
+    vi.mocked(api.feishuChat).mockResolvedValue({ ...status, cardsEnabled: false, lastCardActionAt: null });
+    render(<FeishuChatSettings />);
+    expect(await screen.findByRole('button', { name: '扫码启用学习卡片' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '扫码连接飞书' })).not.toBeInTheDocument();
+    expect(api.feishuCardRegistration).toHaveBeenCalledTimes(1);
+    expect(api.startFeishuCardRegistration).not.toHaveBeenCalled();
+    expect(api.cancelFeishuCardRegistration).not.toHaveBeenCalled();
+  });
+
+  it('已配置卡片能力时不挂载旧连接注册，即使旧注册 complete 也只显示卡片 waiting 流程', async () => {
+    vi.mocked(api.feishuChat).mockResolvedValue({ ...status, cardsEnabled: false, lastCardActionAt: null });
+    vi.mocked(api.feishuRegistration).mockResolvedValue({ state: 'complete', url: null, qrDataUrl: null, expiresAt: null, message: '旧连接授权已完成', error: null });
+    vi.mocked(api.feishuCardRegistration).mockResolvedValue({ state: 'waiting', url: 'https://example.test/cards/authorize', qrDataUrl: 'data:image/png;base64,CARD-WAITING', expiresAt: '2099-01-01T00:00:00.000Z', message: '请扫码启用学习卡片', error: null });
+    render(<FeishuChatSettings />);
+    expect(await screen.findByRole('img', { name: '学习卡片授权二维码' })).toHaveAttribute('src', 'data:image/png;base64,CARD-WAITING');
+    const authorizationHeadings = screen.getAllByRole('heading', { name: /扫码设置飞书应用|启用学习卡片/ });
+    expect(authorizationHeadings).toHaveLength(1);
+    expect(authorizationHeadings[0]).toHaveTextContent('启用学习卡片');
+    expect(screen.queryByText('旧连接授权已完成')).not.toBeInTheDocument();
+    expect(screen.queryByText(/授权完成不代表飞书已经连接/)).not.toBeInTheDocument();
+    expect(api.feishuRegistration).not.toHaveBeenCalled();
+    expect(api.startFeishuRegistration).not.toHaveBeenCalled();
+    expect(api.feishuCardRegistration).toHaveBeenCalledTimes(1);
+    expect(api.startFeishuCardRegistration).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [null, '等待首次按钮确认'],
+    ['2026-10-30T08:00:00.000Z', '已收到按钮操作'],
+  ])('连接已就绪时仍独立显示按钮确认状态：%s', async (lastCardActionAt, message) => {
+    vi.mocked(api.feishuChat).mockResolvedValue({ ...status, cardsEnabled: true, lastCardActionAt });
+    render(<FeishuChatSettings />);
+    expect(await screen.findByText('机器人已连接')).toBeVisible();
+    expect(screen.getByText(message)).toBeVisible();
+    expect(screen.queryByRole('button', { name: '扫码启用学习卡片' })).not.toBeInTheDocument();
+    expect(api.feishuCardRegistration).not.toHaveBeenCalled();
+  });
+
+  it('卡片扫码完成后原地刷新并保留提醒草稿，不把完成授权当成按钮确认', async () => {
+    const user = userEvent.setup();
+    const waiting = { state: 'waiting' as const, url: 'https://example.test/cards/authorize', qrDataUrl: 'data:image/png;base64,CARD-SYNTHETIC', expiresAt: '2099-01-01T00:00:00.000Z', message: '请扫码', error: null };
+    vi.mocked(api.feishuChat)
+      .mockResolvedValueOnce({ ...status, cardsEnabled: false, lastCardActionAt: null })
+      .mockResolvedValueOnce({ ...status, revision: 8, cardsEnabled: true, lastCardActionAt: null });
+    vi.mocked(api.feishuCardRegistration)
+      .mockResolvedValueOnce(waiting)
+      .mockResolvedValueOnce({ state: 'complete', url: null, qrDataUrl: null, expiresAt: null, message: '扫码授权已完成', error: null });
+    render(<FeishuChatSettings />);
+    expect(await screen.findByRole('img', { name: '学习卡片授权二维码' })).toBeVisible();
+    const time = screen.getByLabelText('每日提醒时间');
+    await user.clear(time);
+    await user.type(time, '22:18');
+    expect(await screen.findByText('等待首次按钮确认', {}, { timeout: 3500 })).toBeVisible();
+    expect(time).toHaveValue('22:18');
+    expect(api.feishuChat).toHaveBeenCalledTimes(2);
+    expect(api.startFeishuCardRegistration).not.toHaveBeenCalled();
+    expect(screen.queryByText('已收到按钮操作')).not.toBeInTheDocument();
   });
 });

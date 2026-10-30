@@ -21,6 +21,8 @@ import { Reviews } from './reviews.mjs';
 import { Backup } from './backup.mjs';
 import { Scheduler } from './scheduler.mjs';
 import { Automation } from './automation.mjs';
+import { Advice } from './advice.mjs';
+import { FeishuCardActions } from './feishu-card-actions.mjs';
 import { Http, response } from './http.mjs';
 import { FIELDS, dto, select } from './dto.mjs';
 import { list, onlyFields, expectedRevision, choice, integer, text, strings, dateInZone, now, digest } from './validation.mjs';
@@ -64,7 +66,12 @@ export function createApp(options = {}) {
   const reviews = new Reviews(store, domain, siyuan, jobs, learning);
   const backup = new Backup(store, domain, sources, secrets, jobs, version);
   const automation = new Automation(store, settings, domain, sources, collector, learning, model, jobs, { clock: options.automationClock });
+  const advice = new Advice(store, settings, domain, collector, learning, model, jobs, options.adviceOptions);
+  learning.advice = advice;
+  learning.onAttempt = attempt => advice.schedule(attempt.id, { automatic: true });
   const feishuChat = new FeishuChat(store, settings, secrets, domain, automation, learning, options.feishuChatOptions);
+  const feishuCards = new FeishuCardActions(store, feishuChat, advice, learning, domain, reviews, siyuan, jobs, options.feishuCardOptions);
+  feishuChat.cards = feishuCards;
   const feishuChannel = new FeishuChannel(feishuChat, settings, secrets, options.feishuChannelOptions);
   let registrationChatRevision = null;
   let chatIntent = 0; let registrationChatIntent = null;
@@ -72,6 +79,16 @@ export function createApp(options = {}) {
     onConfigured: () => {
       if (chatIntent === registrationChatIntent && feishuChat.config().revision === registrationChatRevision) feishuChat.update({ enabled: true });
       feishuChannel.wake();
+    } });
+  let cardIntent = 0; let cardRegistrationChatIntent = null;
+  const feishuCardRegistration = new FeishuRegistration(settings, secrets, { ...options.feishuCardRegistrationOptions, cardActions: true,
+    onConfigured: async () => {
+      if (cardIntent !== cardRegistrationChatIntent) return;
+      feishuChat.update({ cardsEnabled: true });
+      await feishuChannel.reconnect();
+      if (cardIntent === cardRegistrationChatIntent && feishuChat.config().enabled && feishuChat.binding()) {
+        feishuChat.sendToday({ interactive: true }); wakeChat();
+      }
     } });
   const chatDto = () => ({ ...feishuChat.public(), connection: feishuChannel.public() });
   const wakeChat = () => setImmediate(() => feishuChannel.wake());
@@ -114,6 +131,8 @@ export function createApp(options = {}) {
   jobs.register('knowledge_sync', (payload, job) => siyuan.sync(payload.knowledgeId, payload.knowledgeRevision, job.id, payload.connectionEpoch));
   jobs.register('daily_plan_generate', async (payload, job) => ({ plan: dto('plans', await learning.generate(payload, job)) }));
   jobs.register('practice_feedback', async payload => ({ feedback: dto('feedback', (await learning.feedback(payload.attemptId, payload.request)).feedback) }));
+  jobs.register('answer_advice', (payload, job) => advice.run(payload, job));
+  jobs.register('feishu_card_action', (payload, job) => feishuCards.run(payload, job));
   jobs.register('review_response', async (payload, job) => {
     const result = await reviews.grade(payload, job);
     return { response: dto('reviewResponses', result.response) };
@@ -271,6 +290,14 @@ export function createApp(options = {}) {
   route('POST', '/practices', ({ body }) => dto('practices', learning.createPractice(input(body, ['projectId', 'kind', 'goal', 'skill', 'prompt', 'estimatedMinutes', 'rubric', 'sourceRefs']))), { status: 201 });
   route('GET', '/practices/:id/attempts', ({ params, query }) => { store.require('practice', params.id); return list(store.all('attempt').filter(record => record.practiceId === params.id).map(record => dto('attempts', record)), query); }, { query: PAGE });
   route('POST', '/practices/:id/attempts', ({ params, body }) => dto('attempts', learning.attempt(params.id, input(body, ['output', 'assistanceLevel', 'evidenceRefs']))), { status: 201 });
+  route('GET', '/advice-settings', () => advice.settingsPublic());
+  route('PUT', '/advice-settings', ({ body }) => advice.update(input(body, ['enabled', 'dailyCallLimit'], advice.config())));
+  route('GET', '/attempts/:id/advice', ({ params }) => advice.public(params.id));
+  route('POST', '/attempts/:id/advice', ({ params, body }) => {
+    const request = input(body, ['retry']);
+    requireValue(request.retry === undefined || typeof request.retry === 'boolean', 'retry 必须为布尔值。');
+    return advice.schedule(params.id, { retry: request.retry ?? false });
+  });
   route('POST', '/attempts/:id/feedback', ({ params, body }) => {
     store.require('attempt', params.id);
     const request = input(body, ['mode', 'allowTemplateFallback', 'manual']);
@@ -295,15 +322,29 @@ export function createApp(options = {}) {
   route('GET', '/feishu-chat', () => chatDto());
   route('GET', '/feishu-chat/entry', () => feishuBotEntry(settings));
   route('PUT', '/feishu-chat', ({ body }) => {
-    feishuChat.update(input(body, ['enabled', 'remindersEnabled', 'reminderLocalTime'], feishuChat.config()));
+    feishuChat.update(input(body, ['enabled', 'remindersEnabled', 'reminderLocalTime', 'cardsEnabled'], feishuChat.config()));
     chatIntent++;
+    if (body.enabled === false || body.cardsEnabled === false) cardIntent++;
     wakeChat(); return chatDto();
   });
   route('POST', '/feishu-chat/pair', ({ body }) => { input(body, []); return feishuChat.pair(); });
-  route('POST', '/feishu-chat/send-today', ({ body }) => { input(body, []); const result = feishuChat.sendToday(); wakeChat(); return result; });
+  route('POST', '/feishu-chat/send-today', ({ body }) => {
+    const request = input(body, ['interactive']);
+    requireValue(request.interactive === undefined || typeof request.interactive === 'boolean', 'interactive 必须为布尔值。');
+    const result = feishuChat.sendToday({ interactive: request.interactive ?? false }); wakeChat(); return result;
+  });
+  route('GET', '/feishu-chat/cards/registration', () => feishuCardRegistration.public());
+  route('POST', '/feishu-chat/cards/registration', ({ body }) => {
+    input(body, []);
+    if (['starting', 'waiting'].includes(feishuRegistration.public().state)) fail(409, 'INVALID_STATE', '请先完成或取消当前的飞书连接扫码。');
+    if (!['starting', 'waiting'].includes(feishuCardRegistration.public().state)) cardRegistrationChatIntent = cardIntent;
+    return feishuCardRegistration.start();
+  });
+  route('POST', '/feishu-chat/cards/registration/cancel', ({ body }) => { input(body, []); return feishuCardRegistration.cancel(); });
   route('GET', '/feishu-chat/registration', () => feishuRegistration.public());
   route('POST', '/feishu-chat/registration', ({ body }) => {
     input(body, []);
+    if (['starting', 'waiting'].includes(feishuCardRegistration.public().state)) fail(409, 'INVALID_STATE', '请先完成或取消卡片交互授权。');
     if (!['starting', 'waiting'].includes(feishuRegistration.public().state)) {
       registrationChatRevision = feishuChat.config().revision; registrationChatIntent = chatIntent;
     }
@@ -312,7 +353,10 @@ export function createApp(options = {}) {
   route('POST', '/feishu-chat/registration/cancel', ({ body }) => { input(body, []); return feishuRegistration.cancel(); });
   route('GET', '/automation', () => automation.public());
   route('PUT', '/automation', ({ body }) => automation.update(input(body, ['enabled'], automation.config())));
-  route('GET', '/today', () => automation.today());
+  route('GET', '/today', () => {
+    const today = automation.today();
+    return { ...today, adviceSettings: advice.settingsPublic(), advice: today.attempt ? advice.public(today.attempt.id) : null };
+  });
   route('PUT', '/settings', ({ body }) => {
     const result = settings.update(input(body, ['model', 'feishu', 'scheduler'], settings.raw()));
     wakeChat(); return result;
@@ -351,9 +395,9 @@ export function createApp(options = {}) {
 
   let closed = false;
   return { server: http.server, store, secrets, settings, sources, domain, siyuan, feishu, model, collector, learning, jobs, reviews, backup, scheduler, automation,
-    feishuChat, feishuChannel, feishuRegistration,
+    feishuChat, feishuChannel, feishuRegistration, feishuCardRegistration, feishuCards, advice,
     async listen(port) { const address = await http.listen(port); jobs.start(); if (options.scheduler !== false) { scheduler.start(); feishuChannel.start(); } return address; },
-    async close() { if (closed) return; closed = true; scheduler.stop(); await feishuRegistration.stop(); await feishuChannel.stop(); await collector.close(); await http.close(); await jobs.stop(); store.close(); },
+    async close() { if (closed) return; closed = true; scheduler.stop(); await feishuRegistration.stop(); await feishuCardRegistration.stop(); await feishuChannel.stop(); await collector.close(); await http.close(); await jobs.stop(); store.close(); },
     get origin() { return http.origin; }, version,
   };
 }

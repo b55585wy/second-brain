@@ -1,13 +1,16 @@
 import { ArrowRight, Check, Send } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { AdviceFeedback } from '../components/AdviceFeedback';
 import { SourceRefs } from '../components/SourceRefs';
 import { Badge, Button, EmptyState, ErrorState, Field, Loading, Notice, PageHeader, SafeText, Section, Textarea } from '../components/ui';
-import { api, evidenceRefInputs } from '../services/api';
-import type { Automation, Feedback, PracticeAttempt, TodayData } from '../types';
+import { api, evidenceRefInputs, operationId } from '../services/api';
+import type { AdviceState, Automation, Feedback, PracticeAttempt, TodayData } from '../types';
+import { advicePending, preferReadyAdvice } from '../utils/advice';
 import { errorMessage } from '../utils/text';
 
 const draftKey = (id: string) => `zhixing.todayDraft.${id}`;
+const fallbackStatuses = new Set<AdviceState['status']>(['off', 'limited', 'unavailable', 'failed', 'uncertain', 'stale']);
 
 function setupEntry(automation: Automation) {
   if (!automation.setup.profile) return { to: '/settings#profile', label: '先完善学习档案' };
@@ -36,15 +39,18 @@ export function TodayPage() {
   const [refreshError, setRefreshError] = useState('');
   const [automationError, setAutomationError] = useState('');
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
+  const [adviceErrors, setAdviceErrors] = useState<Record<string, string>>({});
   const [output, setOutput] = useState('');
   const [automationBusy, setAutomationBusy] = useState(false);
-  const [practiceBusy, setPracticeBusy] = useState<Record<string, 'attempt' | 'feedback'>>({});
+  const [practiceBusy, setPracticeBusy] = useState<Record<string, 'attempt' | 'feedback' | 'advice'>>({});
   const [pollCompletion, setPollCompletion] = useState(0);
   const dataRef = useRef<TodayData | null>(null);
   const inFlight = useRef(false);
   const mounted = useRef(true);
   const pendingActions = useRef(new Set<string>());
   const confirmedAttempts = useRef(new Map<string, PracticeAttempt>());
+  const confirmedAdvice = useRef(new Map<string, AdviceState>());
+  const ambiguousOperations = useRef(new Map<string, { id: string; retry: boolean }>());
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return;
@@ -55,12 +61,17 @@ export function TodayPage() {
       if (!mounted.current) return;
       const previous = dataRef.current;
       const nextAutomation = previous && next.automation.revision < previous.automation.revision ? previous.automation : next.automation;
+      const nextAdviceSettings = previous?.adviceSettings && next.adviceSettings && next.adviceSettings.revision < previous.adviceSettings.revision ? previous.adviceSettings : next.adviceSettings ?? previous?.adviceSettings;
       const nextPractice = next.practice;
       const samePractice = nextPractice?.id === previous?.practice?.id;
       const returnedAttempt = next.attempt?.practiceId === nextPractice?.id ? next.attempt : null;
       let nextAttempt = returnedAttempt ?? (nextPractice ? confirmedAttempts.current.get(nextPractice.id) ?? (samePractice ? previous?.attempt ?? null : null) : null);
       if (nextAttempt && previous?.attempt?.id === nextAttempt.id && previous.attempt.feedback && !nextAttempt.feedback) nextAttempt = { ...nextAttempt, feedback: previous.attempt.feedback };
-      const merged = { ...next, automation: nextAutomation, practice: nextPractice, attempt: nextAttempt };
+      const previousAdvice = previous && previous.attempt?.id === nextAttempt?.id ? previous.advice : undefined;
+      const incomingAdvice = next.advice?.attemptId === nextAttempt?.id ? next.advice : nextAttempt ? confirmedAdvice.current.get(nextAttempt.id) : undefined;
+      const nextAdvice = nextAttempt ? preferReadyAdvice(previousAdvice, incomingAdvice) : null;
+      if (nextAdvice) confirmedAdvice.current.set(nextAdvice.attemptId, nextAdvice);
+      const merged: TodayData = { ...next, automation: nextAutomation, adviceSettings: nextAdviceSettings, practice: nextPractice, attempt: nextAttempt, advice: nextAdvice };
       dataRef.current = merged;
       setData(merged);
       setRefreshError('');
@@ -84,16 +95,18 @@ export function TodayPage() {
   useEffect(() => {
     if (!pollCompletion) return;
     const state = dataRef.current?.automation.state;
-    const delay = state && ['collecting', 'organizing'].includes(state) ? 4000 : 60000;
+    const delay = advicePending(dataRef.current?.advice) || state && ['collecting', 'organizing'].includes(state) ? 4000 : 60000;
     const timer = window.setTimeout(() => void refresh(), delay);
     return () => window.clearTimeout(timer);
-  }, [pollCompletion, refresh]);
+  }, [pollCompletion, refresh, data?.advice?.status, data?.automation.state]);
 
   const practice = data?.practice ?? null;
   const practiceId = practice?.id ?? '';
   const attempt = data?.attempt ?? null;
+  const advice = attempt && data?.advice?.attemptId === attempt.id ? data.advice : null;
   const busy = practiceBusy[practiceId] ?? '';
   const actionError = actionErrors[practiceId] ?? '';
+  const adviceError = attempt ? adviceErrors[attempt.id] ?? '' : '';
   useEffect(() => {
     setOutput(practiceId ? localStorage.getItem(draftKey(practiceId)) || '' : '');
   }, [practiceId]);
@@ -107,7 +120,16 @@ export function TodayPage() {
     });
   }
 
-  function setPracticeAction(id: string, action: 'attempt' | 'feedback' | null) {
+  function setAdviceError(id: string, message: string) {
+    setAdviceErrors((current) => {
+      const next = { ...current };
+      if (message) next[id] = message;
+      else delete next[id];
+      return next;
+    });
+  }
+
+  function setPracticeAction(id: string, action: 'attempt' | 'feedback' | 'advice' | null) {
     setPracticeBusy((current) => {
       const next = { ...current };
       if (action) next[id] = action;
@@ -120,7 +142,24 @@ export function TodayPage() {
     confirmedAttempts.current.set(saved.practiceId, saved);
     const current = dataRef.current;
     if (current?.practice?.id !== saved.practiceId) return;
-    const merged = { ...current, attempt: saved };
+    const savedAdvice = current.advice?.attemptId === saved.id ? current.advice : confirmedAdvice.current.get(saved.id);
+    const merged = { ...current, attempt: saved, advice: savedAdvice };
+    dataRef.current = merged;
+    setData(merged);
+  }
+
+  function adoptAdvice(incoming: AdviceState) {
+    const currentAdvice = confirmedAdvice.current.get(incoming.attemptId);
+    const saved = preferReadyAdvice(currentAdvice, incoming) ?? incoming;
+    confirmedAdvice.current.set(saved.attemptId, saved);
+    const current = dataRef.current;
+    if (current?.attempt?.id !== saved.attemptId || current.practice?.id !== current.attempt.practiceId) return;
+    let currentAttempt = current.attempt;
+    if (saved.feedback) {
+      currentAttempt = { ...currentAttempt, feedback: saved.feedback };
+      confirmedAttempts.current.set(currentAttempt.practiceId, currentAttempt);
+    }
+    const merged = { ...current, attempt: currentAttempt, advice: saved };
     dataRef.current = merged;
     setData(merged);
   }
@@ -165,6 +204,48 @@ export function TodayPage() {
     }
   }
 
+  async function readAdvice(savedAttempt: PracticeAttempt) {
+    const key = `advice:${savedAttempt.id}`;
+    if (pendingActions.current.has(key)) return;
+    pendingActions.current.add(key);
+    setPracticeAction(savedAttempt.practiceId, 'advice');
+    setAdviceError(savedAttempt.id, '');
+    try {
+      const next = await api.advice(savedAttempt.id);
+      ambiguousOperations.current.delete(savedAttempt.id);
+      if (mounted.current) adoptAdvice(next);
+    } catch (reason) {
+      if (mounted.current) setAdviceError(savedAttempt.id, `AI 建议读取失败：${errorMessage(reason)}`);
+    } finally {
+      pendingActions.current.delete(key);
+      if (mounted.current) setPracticeAction(savedAttempt.practiceId, null);
+    }
+  }
+
+  async function requestModelAdvice(savedAttempt: PracticeAttempt, retry: boolean) {
+    const key = `advice:${savedAttempt.id}`;
+    if (pendingActions.current.has(key)) return;
+    const ambiguous = ambiguousOperations.current.get(savedAttempt.id);
+    const known = confirmedAdvice.current.get(savedAttempt.id);
+    if (!ambiguous && (retry ? !known?.canRetry : !known?.canRequest)) return;
+    const id = ambiguous?.id ?? operationId();
+    const operationRetry = ambiguous?.retry ?? retry;
+    pendingActions.current.add(key);
+    setPracticeAction(savedAttempt.practiceId, 'advice');
+    setAdviceError(savedAttempt.id, '');
+    try {
+      const next = await api.requestAdvice(savedAttempt.id, id, operationRetry);
+      ambiguousOperations.current.delete(savedAttempt.id);
+      if (mounted.current) adoptAdvice(next);
+    } catch (reason) {
+      ambiguousOperations.current.set(savedAttempt.id, { id, retry: operationRetry });
+      if (mounted.current) setAdviceError(savedAttempt.id, `请求结果尚未确认：${errorMessage(reason)} 可使用同一操作安全重试，不会主动创建新请求。`);
+    } finally {
+      pendingActions.current.delete(key);
+      if (mounted.current) setPracticeAction(savedAttempt.practiceId, null);
+    }
+  }
+
   async function submitAttempt(event: FormEvent) {
     event.preventDefault();
     const selectedPractice = practice;
@@ -180,7 +261,8 @@ export function TodayPage() {
       adoptAttempt(saved);
       if (dataRef.current?.practice?.id === saved.practiceId) setOutput(saved.output);
       localStorage.removeItem(draftKey(saved.practiceId));
-      await requestFeedback(saved);
+      if (dataRef.current?.adviceSettings?.enabled === true) await readAdvice(saved);
+      else await requestFeedback(saved);
     } catch (reason) {
       if (mounted.current) setPracticeError(id, errorMessage(reason));
     } finally {
@@ -198,6 +280,8 @@ export function TodayPage() {
   const editorVisible = !!practice && !attempt;
   const enablePrimary = !setup && !automation.enabled && !practice;
   const hasIndependentPracticeTitle = !!practice && practice.title.trim().length > 0 && practice.title !== practice.goal && practice.title !== practice.prompt.slice(0, 60);
+  const modelFeedback = attempt?.feedback?.mode === 'model' ? attempt.feedback : advice?.feedback?.mode === 'model' ? advice.feedback : null;
+  const ambiguousOperation = attempt ? ambiguousOperations.current.get(attempt.id) : undefined;
   return <div className="mx-auto max-w-5xl">
     <PageHeader eyebrow={data.date} title="今天" description="只看与当前目标相关的重点，以及一项练习。" />
     <section aria-labelledby="automation-status" className="mb-10 border-l-2 border-accent pl-5 sm:pl-6">
@@ -221,7 +305,20 @@ export function TodayPage() {
       {practice ? <article>
         {practice.skill && <p className="eyebrow">{practice.skill}</p>}{hasIndependentPracticeTitle && <h3 className="mt-2 text-2xl">{practice.title}</h3>}<SafeText className="mt-4">{practice.prompt}</SafeText>{practice.goal && <p className="mt-3 text-sm text-muted">目标：{practice.goal}</p>}
         <details className="mt-4"><summary className="cursor-pointer text-sm text-accent">评价要点与来源</summary><div className="mt-4 grid gap-6 sm:grid-cols-2"><div><h4 className="mb-2 text-sm font-medium">评价要点</h4>{practice.rubric.length ? <ol className="space-y-3 text-sm text-muted">{practice.rubric.map((criterion) => <li key={criterion.id}><p className="font-medium text-ink">{criterion.label}</p><SafeText>{criterion.description}</SafeText>{criterion.expectedEvidence.length > 0 && <p className="text-xs">需要的证据：{criterion.expectedEvidence.join('、')}</p>}</li>)}</ol> : <p className="text-sm text-muted">未提供评价要点。</p>}</div><div><h4 className="mb-2 text-sm font-medium">来源</h4><SourceRefs refs={practice.sourceRefs} /></div></div></details>
-        {attempt ? <div className="mt-6 border-t border-line pt-6"><div className="flex items-center gap-2 text-accent"><Check className="h-5 w-5" aria-hidden="true" /><h4 className="font-medium">本次输出已保存</h4></div><SafeText className="mt-4 rounded-md bg-surface p-4">{attempt.output}</SafeText>{busy === 'feedback' && <p role="status" className="mt-3 text-sm text-muted">正在准备核对要点…</p>}{attempt.feedback ? <TemplateFeedback feedback={attempt.feedback} /> : busy !== 'feedback' && !actionError ? <p className="mt-3 text-sm text-muted">核对要点尚未准备好；已保存的输出不受影响。</p> : null}</div> : <form onSubmit={submitAttempt} className="mt-6"><Field label="你的输出" hint="草稿会自动保留。先用自己的话回答，再对照要点检查。"><Textarea className="min-h-56" value={output} onChange={(event) => { setOutput(event.target.value); localStorage.setItem(draftKey(practice.id), event.target.value); }} placeholder="用自己的话写下答案、过程或成果…" /></Field><Button type="submit" className="mt-4" disabled={busy === 'attempt' || !output.trim()}><Send className="h-4 w-4" />{busy === 'attempt' ? '正在保存…' : '保存输出'}</Button></form>}
+        {attempt ? <div className="mt-6 border-t border-line pt-6"><div className="flex items-center gap-2 text-accent"><Check className="h-5 w-5" aria-hidden="true" /><h4 className="font-medium">本次输出已保存</h4></div><SafeText className="mt-4 rounded-md bg-surface p-4">{attempt.output}</SafeText>
+          {busy === 'feedback' && <p role="status" className="mt-3 text-sm text-muted">正在准备核对要点…</p>}
+          {modelFeedback && <AdviceFeedback feedback={modelFeedback} />}
+          {attempt.feedback && attempt.feedback.mode !== 'model' && <TemplateFeedback feedback={attempt.feedback} />}
+          {advice && <p role="status" className="mt-3 text-sm text-muted">{advice.message || (advicePending(advice) ? '正在准备 AI 建议…' : 'AI 建议当前不可用；已保存的输出不受影响。')}</p>}
+          {advice?.lastError && advice.lastError.message !== advice.message && <p className="mt-2 text-sm text-danger">{advice.lastError.message}</p>}
+          {adviceError && <div className="mt-3"><Notice tone="error">{adviceError}<div className="mt-2"><Button variant="secondary" onClick={() => ambiguousOperation ? void requestModelAdvice(attempt, ambiguousOperation.retry) : void readAdvice(attempt)} disabled={busy === 'advice'}>{ambiguousOperation ? '安全重试请求' : '重新读取建议'}</Button></div></Notice></div>}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {!ambiguousOperation && advice?.canRetry && <Button variant="secondary" onClick={() => void requestModelAdvice(attempt, true)} disabled={busy === 'advice'}>{busy === 'advice' ? '正在请求点评…' : '重新请求点评'}</Button>}
+            {!ambiguousOperation && !advice?.canRetry && advice?.canRequest && <Button variant="secondary" onClick={() => void requestModelAdvice(attempt, false)} disabled={busy === 'advice'}>{busy === 'advice' ? '正在请求建议…' : '获取AI建议'}</Button>}
+            {(!advice || fallbackStatuses.has(advice.status)) && <Button variant="ghost" onClick={() => void requestFeedback(attempt)} disabled={busy === 'feedback'}>{busy === 'feedback' ? '正在准备核对要点…' : '使用本地模板自查'}</Button>}
+          </div>
+          {!advice && !adviceError && !actionError && <p className="mt-3 text-sm text-muted">核对要点尚未准备好；已保存的输出不受影响。</p>}
+        </div> : <form onSubmit={submitAttempt} className="mt-6"><Field label="你的输出" hint="草稿会自动保留。先用自己的话回答，再对照要点检查。"><Textarea className="min-h-56" value={output} onChange={(event) => { setOutput(event.target.value); localStorage.setItem(draftKey(practice.id), event.target.value); }} placeholder="用自己的话写下答案、过程或成果…" /></Field><Button type="submit" className="mt-4" disabled={busy === 'attempt' || !output.trim()}><Send className="h-4 w-4" />{busy === 'attempt' ? '正在保存…' : '保存输出'}</Button></form>}
       </article> : <EmptyState title={paused ? '今日练习因预算暂停' : '今天还没有练习'} description={paused ? '每日预算为 0 分钟，因此没有生成练习。可在学习档案中调整预算。' : '相关重点准备好后，这里会安排一个练习'} action={paused ? <Link to="/settings#profile" className="btn-secondary">编辑时间预算</Link> : undefined} />}
     </Section>
     <p className="mt-12 border-t border-line pt-5 text-sm text-muted">模型整理的内容需要你结合原始来源核对事实。</p>

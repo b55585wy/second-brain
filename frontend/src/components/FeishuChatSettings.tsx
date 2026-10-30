@@ -209,7 +209,14 @@ export function FeishuChatSettings({ onRegistrationComplete }: { onRegistrationC
         </div>
       </div>
 
-      <FeishuRegistration configured={status.configured} onComplete={registrationComplete} />
+      {!(status.configured && typeof status.cardsEnabled === 'boolean') && <FeishuRegistration configured={status.configured} onComplete={registrationComplete} />}
+
+      {typeof status.cardsEnabled === 'boolean' && status.configured && (status.cardsEnabled
+        ? <section aria-labelledby="feishu-cards-status-title" className="rounded-lg border border-line px-5 py-4">
+          <h3 id="feishu-cards-status-title" className="text-lg">学习卡片</h3>
+          <p role="status" className="mt-2 text-sm text-muted">{status.lastCardActionAt ? '已收到按钮操作' : '等待首次按钮确认'}</p>
+        </section>
+        : <FeishuRegistration purpose="cards" configured={status.configured} onComplete={registrationComplete} />)}
 
       {!status.configured && <Notice>已有飞书应用？可在高级设置中手动填写 <a className="font-medium text-accent underline underline-offset-4" href="#feishu">飞书 App ID 与 App Secret</a>。无需手动填写时，直接扫码即可。</Notice>}
 

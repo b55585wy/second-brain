@@ -14,29 +14,33 @@ export function channelError(error) {
   return new ApiError(503, 'CONNECTION_UNAVAILABLE', '飞书暂未连接，请检查网络及应用的机器人、长连接和发布状态。', true);
 }
 
-export async function createFeishuTransport({ appId, appSecret, apiBase, onMessage, onState, onError, loadSdk = () => import('@larksuiteoapi/node-sdk') }) {
+export async function createFeishuTransport({ appId, appSecret, apiBase, onMessage, onCardAction, onState, onError, loadSdk = () => import('@larksuiteoapi/node-sdk') }) {
   const sdk = await loadSdk();
   const channel = sdk.createLarkChannel({ appId, appSecret,
     domain: apiBase === 'https://open.larksuite.com' ? sdk.Domain.Lark : sdk.Domain.Feishu,
-    logger: QUIET_LOGGER, policy: { dmMode: 'open', groupAllowlist: [] } });
+    logger: QUIET_LOGGER, includeRawEvent: true, policy: { dmMode: 'open', groupAllowlist: [] } });
   channel.on('message', onMessage);
+  channel.on('cardAction', event => { onCardAction?.(event); });
   channel.on('reconnecting', () => onState('connecting'));
   channel.on('reconnected', () => onState('connected'));
   channel.on('error', onError);
   return {
     connect: () => channel.connect(), disconnect: () => channel.disconnect(),
-    async send({ chatId, text, uuid }) {
+    async send({ chatId, text, uuid, card, updateMessageId }) {
       let result;
       try {
-        result = await channel.rawClient.im.v1.message.create({ params: { receive_id_type: 'chat_id' },
-          data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }), uuid } });
+        result = updateMessageId
+          ? await channel.rawClient.im.v1.message.patch({ path: { message_id: updateMessageId }, data: { content: JSON.stringify(card) } })
+          : await channel.rawClient.im.v1.message.create({ params: { receive_id_type: 'chat_id' },
+            data: { receive_id: chatId, msg_type: card ? 'interactive' : 'text', content: JSON.stringify(card ?? { text }), uuid } });
       } catch (error) { throw channelError(error); }
       if (result.code !== 0) {
         const error = channelError({ code: result.code });
         error.uncertain = false; throw error;
       }
-      if (!result.data?.message_id) throw channelError(null);
-      return { messageId: result.data.message_id };
+      const messageId = updateMessageId ?? result.data?.message_id;
+      if (!messageId) throw channelError(null);
+      return { messageId };
     },
   };
 }
@@ -63,6 +67,12 @@ export class FeishuChannel {
     if (!this.stopped) return;
     this.stopped = false;
     this.timer = setInterval(() => this.wake(), 15000); this.timer.unref(); this.wake();
+  }
+
+  async reconnect() {
+    await this.pending;
+    await this.disconnect();
+    if (!this.stopped) await this.wake();
   }
 
   wake() {
@@ -103,6 +113,12 @@ export class FeishuChannel {
         onMessage: message => {
           if (!this.current(identity, generation)) return;
           this.chat.receive(message, identity); this.wake();
+        },
+        onCardAction: event => {
+          if (!this.current(identity, generation)) return;
+          try { this.chat.cards?.receive(event, identity); }
+          catch { this.chat.error('CARD_ACTION_FAILED', '卡片操作未完成，学习记录已保留；可以在私聊中继续。', false); }
+          setImmediate(() => this.wake());
         },
         onState: state => { if (this.current(identity, generation)) this.state = state; },
         onError: error => { if (this.current(identity, generation)) this.recordError(error); },

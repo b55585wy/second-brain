@@ -9,6 +9,24 @@
 - 单元与真实 API 合约测试：`src/pages/*.test.tsx`、`src/services/api.test.ts`、`src/services/api.contract.test.ts`
 - 详细场景与当前状态边界：`README.md`
 
+## 飞书学习卡片授权（本轮）
+
+- Kimi CLI 实现的卡片渲染模块位于 `../server/feishu-cards.mjs`，15 项纯函数测试位于 `../tests/backend/feishu-cards.test.mjs`；SDK、回调与集成验证由 Codex 负责。
+- `src/types.ts` 为 `FeishuChatStatus` 增加可选 `cardsEnabled/lastCardActionAt`，`FeishuChatInput` 与 `src/services/api.ts` 的既有 PUT 可选携带 `cardsEnabled`；未提供时原三个配置字段不变。
+- 新增 `GET/POST /feishu-chat/cards/registration` 与 `POST /feishu-chat/cards/registration/cancel` 客户端方法，POST body 严格只有 operationId。`FeishuRegistration` 通过 `purpose="cards"` 选择这些依赖并复用原轮询、错误、过期和清理状态机；默认 connect 行为不变。
+- 卡片区只在 configured 且 cardsEnabled 为布尔值时出现；此时不挂载旧 connect 注册，确保只有一个授权流程可见。二维码只能显式创建或取消，409 原样显示且不自动重试；完成后原地刷新并保留提醒草稿。启用后分别显示“等待首次按钮确认”或“已收到按钮操作”，不以连接或扫码完成冒充按钮可用。
+- 隔离验证：`npm.cmd test -- --exclude src/services/api.contract.test.ts --maxWorkers=1 --no-file-parallelism` 为 15 个测试文件、223 个测试全部通过；随后独立执行 `npm.cmd run typecheck`、`npm.cmd run build`、`git diff --check -- frontend` 均通过。Kimi 未执行实际后端、模型或飞书客户端验证，未运行真实卡片发送、浏览器或截图验证，未安装依赖。
+
+## 自动答案点评（本轮）
+
+- `src/types.ts`、`src/services/api.ts`、`src/services/adapters.ts` 新增独立 `AdviceSettings`、`AdviceState` 与精确 `GET/PUT /advice-settings`、`GET/POST /attempts/:id/advice`。POST 直接采用 HTTP 200 的 AdviceState，不进入 job 轮询；Today 可选字段缺失时保持缺失，配置修订缓存不会因较低修订响应倒退。
+- `src/pages/TodayPage.tsx` 只在最新 `today.adviceSettings?.enabled === true` 时进入新回答自动点评读取路径，旧载荷继续自动模板自查。queued/running 时 Today 每 4 秒完成驱动、非重叠续读，其他状态恢复 60 秒，拒绝后续读且卸载清理。回答、反馈、错误、操作身份按 practice/attempt 隔离；迟到的 pending 不撤销同 attempt 的 ready 结果。
+- 显式获取或重试严格采用服务端 canRequest/canRetry 和 pending 防重复。未知 HTTP 结果的安全重试复用 operationId；已知终态后的明确新重试使用新身份。off/limited/unavailable/failed/uncertain/stale 保留已保存回答与本地模板入口，不自动增加模型请求。
+- `src/pages/PracticePage.tsx` 选择练习后只读已有 attempt/advice，支持相同的显式请求和共享反馈；pending 每 4 秒非重叠续读，选择变化与卸载清理，A 的迟到结果不覆盖 B。既有模板反馈和成果输出路径保留。
+- `src/components/AdviceFeedback.tsx` 共用“已做到 / 待改进 / 下一步”三块，前两类最多两条、下一步最多一条；空分类使用中性文案，依据和限制折叠，不显示掌握百分比。`src/components/AdviceSettingsPanel.tsx` 提供独立自动点评开关、0–20 整数上限、真实用量与模型配置状态；GET 失败、修订冲突及显式刷新保留 dirty 草稿，较低修订 GET 不撤销 PUT。
+- 完成修正：Today 的模板自查与 AI 状态、错误、请求/重试操作独立渲染，保存或显式请求进入 queued/running 会立即重排 4 秒读取，终态恢复 60 秒；Practice 显示只读“已保存的回答”，新保存尝试不被迟到的同练习历史 GET 覆盖；共享 AI 建议不再显示内部 basis；修订缓存单调性仅限 `/advice-settings`，既有路径保持原语义。
+- 新增上述状态、历史回答、同练习竞争、计时器和修订边界回归测试，既有断言全部保留。隔离验证：14 个测试文件、212 个测试全部通过；`npm.cmd run typecheck`、`npm.cmd run build`、`git diff --check -- frontend` 通过。按要求排除 `src/services/api.contract.test.ts`，未运行后端、真实模型、浏览器或截图验证，未安装依赖；集成浏览器、真实后端和真实模型检查由 root 负责。
+
 ## 飞书学习首步设置
 
 网页绑定区使用只读 `GET /feishu-chat/entry` 展示当前应用的官方私聊链接与折叠手机二维码，已绑定也可使用。入口失败局部显示并保留提醒草稿，刷新清除旧入口，注册后重新读取，不增加写请求或轮询。Codex 集成验证完整前端174、后端399、打包35及合成浏览器10通过；详见 [当前验收](../docs/FEISHU-VERIFICATION-20261029.md)。

@@ -5,7 +5,7 @@ import { digestInstruction, validateDigest } from './model-digest.mjs';
 export class Model {
   constructor(settings, secrets, transport) { this.settings = settings; this.secrets = secrets; this.transport = transport; }
 
-  async generate(instruction, input, { timeoutMs } = {}) {
+  async generate(instruction, input, { timeoutMs, onUsage } = {}) {
     const config = this.settings.raw().model;
     if (!config.enabled || !config.endpoint || !config.model) fail(503, 'MODEL_UNAVAILABLE', '尚未启用模型，手工功能和模板仍可使用。');
     const hostname = new URL(config.endpoint).hostname;
@@ -22,6 +22,12 @@ export class Model {
           { role: 'user', content: JSON.stringify(this.secrets.clean(input)) },
         ] }, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     });
+    if (onUsage) {
+      const usage = response?.usage;
+      const keys = ['prompt_tokens', 'completion_tokens', 'total_tokens'];
+      const valid = usage && keys.every(key => Number.isSafeInteger(usage[key]) && usage[key] >= 0);
+      onUsage(valid ? Object.fromEntries(keys.map(key => [key, usage[key]])) : null);
+    }
     const content = response?.choices?.[0]?.message?.content;
     if (typeof content !== 'string' || content.length > 100000) fail(502, 'UPSTREAM_ERROR', '模型未返回有限的结构化结果。');
     try { return this.secrets.clean(JSON.parse(content)); }

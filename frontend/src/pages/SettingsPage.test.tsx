@@ -8,6 +8,7 @@ vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>();
   return { ...actual, api: {
     profile: vi.fn(), connections: vi.fn(), settings: vi.fn(), automation: vi.fn(), saveAutomation: vi.fn(), saveSettings: vi.fn(), saveSiyuan: vi.fn(), saveProfile: vi.fn(), exportDownload: vi.fn(), checkSiyuan: vi.fn(), notebooks: vi.fn(),
+    adviceSettings: vi.fn(), saveAdviceSettings: vi.fn(),
     feishuChat: vi.fn(), feishuChatEntry: vi.fn(), feishuRegistration: vi.fn(), startFeishuRegistration: vi.fn(), saveFeishuChat: vi.fn(), pairFeishuChat: vi.fn(), sendFeishuToday: vi.fn(),
   } };
 });
@@ -26,6 +27,8 @@ beforeEach(() => {
   vi.mocked(api.settings).mockResolvedValue(settings);
   vi.mocked(api.automation).mockResolvedValue({ enabled: false, revision: 8, state: 'off', message: '自动整理已关闭', setup: { profile: true, scope: true, model: true }, dailyCallLimit: 3, callsToday: 0, nextRunAt: null, lastSuccessAt: null, lastError: null });
   vi.mocked(api.saveAutomation).mockImplementation(async (enabled, revision) => ({ enabled, revision: revision + 1, state: enabled ? 'ready' : 'off', message: enabled ? '自动整理已开启' : '自动整理已关闭', setup: { profile: true, scope: true, model: true }, dailyCallLimit: 3, callsToday: 0, nextRunAt: null, lastSuccessAt: null, lastError: null }));
+  vi.mocked(api.adviceSettings).mockResolvedValue({ enabled: false, dailyCallLimit: 3, revision: 2, callsToday: 0, remainingToday: 3, modelConfigured: true });
+  vi.mocked(api.saveAdviceSettings).mockImplementation(async (body, revision) => ({ ...body, revision: (revision ?? 2) + 1, callsToday: 0, remainingToday: body.dailyCallLimit, modelConfigured: true }));
   vi.mocked(api.saveSettings).mockResolvedValue(settings);
   vi.mocked(api.feishuChat).mockResolvedValue({ enabled: true, revision: 12, remindersEnabled: false, reminderLocalTime: '09:30', bound: false, configured: true, lastReceivedAt: null, lastSentAt: null, connection: { state: 'connected', message: '机器人已连接', lastError: null } });
   vi.mocked(api.feishuChatEntry).mockResolvedValue({ url: null, qrDataUrl: null });

@@ -4,11 +4,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { TodayPage } from './TodayPage';
 import { api } from '../services/api';
 import { normalizePractice } from '../services/adapters';
-import type { Automation, Feedback, Practice, PracticeAttempt, TodayData } from '../types';
+import type { AdviceSettings, AdviceState, Automation, Feedback, Practice, PracticeAttempt, TodayData } from '../types';
 
 vi.mock('../services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/api')>();
-  return { ...actual, api: { ...actual.api, today: vi.fn(), saveAutomation: vi.fn(), attemptPractice: vi.fn(), feedback: vi.fn() } };
+  return { ...actual, api: { ...actual.api, today: vi.fn(), saveAutomation: vi.fn(), attemptPractice: vi.fn(), feedback: vi.fn(), advice: vi.fn(), requestAdvice: vi.fn() } };
 });
 
 const automation = (overrides: Partial<Automation> = {}): Automation => ({
@@ -23,6 +23,9 @@ const practice = (id = 'practice-1'): Practice => ({
 });
 const feedback: Feedback = { id: 'feedback-1', attemptId: 'attempt-1', mode: 'template', basis: 'rubric', summary: '模板未判断正确性。', observations: [{ criterionId: 'rubric-1', finding: 'not_assessed', comment: '请自行核对。', evidenceRefs: [] }], nextActions: ['核对来源'], limitations: ['未验证事实'] };
 const attempt = (overrides: Partial<PracticeAttempt> = {}): PracticeAttempt => ({ id: 'attempt-1', practiceId: 'practice-1', output: '已保存的解释', assistanceLevel: 'none', evidenceRefs: [], feedback: null, ...overrides });
+const adviceSettings = (overrides: Partial<AdviceSettings> = {}): AdviceSettings => ({ enabled: true, dailyCallLimit: 3, revision: 2, callsToday: 0, remainingToday: 3, modelConfigured: true, ...overrides });
+const modelFeedback = (attemptId = 'attempt-1'): Feedback => ({ id: `model-${attemptId}`, attemptId, mode: 'model', basis: '回答与评价要点', summary: '模型建议摘要', observations: [{ criterionId: 'rubric-1', finding: 'partial', comment: '答案提到“读写权衡”，还需补充例子。', evidenceRefs: [{ kind: 'output', id: attemptId, url: null, label: '本次回答' }] }], nextActions: ['补充一个查询例子'], limitations: ['建议未核验全部事实'] });
+const adviceState = (overrides: Partial<AdviceState> = {}): AdviceState => ({ attemptId: 'attempt-1', status: 'idle', jobId: null, feedback: null, message: '可以请求 AI 建议', canRequest: false, canRetry: false, lastError: null, ...overrides });
 const today = (overrides: Partial<TodayData> = {}): TodayData => ({
   date: '2026-10-28', profile: { goals: ['理解数据库'], careerDirection: '', skills: [], dailyBudgetMinutes: 15, timeZone: 'Asia/Shanghai', revision: 2 },
   automation: automation(), highlights: [], practice: null, attempt: null, generatedAt: null, ...overrides,
@@ -471,5 +474,145 @@ describe('Today 草稿与轮询边界', () => {
     await waitFor(() => expect(api.saveAutomation).toHaveBeenCalledTimes(2));
     expect(api.saveAutomation).toHaveBeenNthCalledWith(1, true, 4);
     expect(api.saveAutomation).toHaveBeenNthCalledWith(2, false, 5);
+  });
+});
+
+describe('Today 自动 AI 建议', () => {
+  it('启用时保存一次后只 GET 自动点评，四秒完成轮询并恢复六十秒，不自动 POST 或模板调用', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const queued = adviceState({ status: 'queued', message: 'AI 点评排队中' });
+    const ready = adviceState({ status: 'ready', message: 'AI 建议已准备好', feedback: modelFeedback() });
+    vi.mocked(api.today)
+      .mockResolvedValueOnce(today({ practice: practice(), adviceSettings: adviceSettings() }))
+      .mockResolvedValue(today({ practice: practice(), attempt: attempt(), adviceSettings: adviceSettings(), advice: ready }));
+    vi.mocked(api.attemptPractice).mockResolvedValue(attempt());
+    vi.mocked(api.advice).mockResolvedValue(queued);
+    renderToday();
+    fireEvent.change(await screen.findByLabelText('你的输出'), { target: { value: '新的已保存回答' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存输出' }));
+    expect(await screen.findByText('AI 点评排队中')).toBeVisible();
+    expect(api.attemptPractice).toHaveBeenCalledTimes(1);
+    expect(api.advice).toHaveBeenCalledWith('attempt-1');
+    expect(api.feedback).not.toHaveBeenCalled();
+    expect(api.requestAdvice).not.toHaveBeenCalled();
+    expect(api.today).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(4000));
+    expect(await screen.findByText('模型建议摘要')).toBeVisible();
+    expect(screen.getByText('AI建议')).toBeVisible();
+    expect(api.today).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(60000));
+    await waitFor(() => expect(api.today).toHaveBeenCalledTimes(3));
+    expect(api.requestAdvice).not.toHaveBeenCalled();
+  });
+
+  it('显式请求进入 queued 后即时改用四秒轮询，ready 后恢复六十秒并清理', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const queued = adviceState({ status: 'queued', message: '显式请求已排队' });
+    const ready = adviceState({ status: 'ready', message: 'AI 建议已准备好', feedback: modelFeedback() });
+    vi.mocked(api.today)
+      .mockResolvedValueOnce(today({ practice: practice(), attempt: attempt(), adviceSettings: adviceSettings(), advice: adviceState({ canRequest: true }) }))
+      .mockResolvedValue(today({ practice: practice(), attempt: attempt(), adviceSettings: adviceSettings(), advice: ready }));
+    vi.mocked(api.requestAdvice).mockResolvedValue(queued);
+    const view = renderToday();
+    fireEvent.click(await screen.findByRole('button', { name: '获取AI建议' }));
+    expect(await screen.findByText('显式请求已排队')).toBeVisible();
+    expect(api.today).toHaveBeenCalledTimes(1);
+    expect(api.requestAdvice).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(4000));
+    expect(await screen.findByText('模型建议摘要')).toBeVisible();
+    expect(api.today).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(60000));
+    await waitFor(() => expect(api.today).toHaveBeenCalledTimes(3));
+    view.unmount();
+    await act(async () => vi.advanceTimersByTimeAsync(120000));
+    expect(api.today).toHaveBeenCalledTimes(3);
+    expect(api.advice).not.toHaveBeenCalled();
+    expect(api.requestAdvice).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['off', 'limited', 'unavailable', 'failed', 'uncertain', 'stale'] as const)('%s 保留原回答、真实状态和本地自查，不自动发起付费请求', async (status) => {
+    vi.mocked(api.today).mockResolvedValue(today({ practice: practice(), attempt: attempt(), adviceSettings: adviceSettings(), advice: adviceState({ status, message: `服务端 ${status} 状态` }) }));
+    renderToday();
+    expect(await screen.findByText('已保存的解释')).toBeVisible();
+    expect(screen.getByText(`服务端 ${status} 状态`)).toBeVisible();
+    expect(screen.getByRole('button', { name: '使用本地模板自查' })).toBeVisible();
+    expect(api.advice).not.toHaveBeenCalled();
+    expect(api.requestAdvice).not.toHaveBeenCalled();
+    expect(api.feedback).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: 'idle' as const, message: '可以请求 AI 建议', canRequest: true, canRetry: false, action: '获取AI建议' },
+    { status: 'failed' as const, message: 'AI 点评失败', canRequest: false, canRetry: true, action: '重新请求点评' },
+    { status: 'queued' as const, message: 'AI 点评排队中', canRequest: false, canRetry: false, action: null },
+    { status: 'running' as const, message: 'AI 点评生成中', canRequest: false, canRetry: false, action: null },
+  ])('已有回答和模板反馈仍独立显示 $status 建议状态与操作', async ({ status, message, canRequest, canRetry, action }) => {
+    vi.mocked(api.today).mockResolvedValue(today({
+      practice: practice(), attempt: attempt({ feedback }), adviceSettings: adviceSettings(),
+      advice: adviceState({ status, message, canRequest, canRetry }),
+    }));
+    renderToday();
+    expect(await screen.findByText('已保存的解释')).toBeVisible();
+    expect(screen.getByText('模板未判断正确性。')).toBeInTheDocument();
+    expect(screen.getByText(message)).toBeVisible();
+    if (action) expect(screen.getByRole('button', { name: action })).toBeVisible();
+    expect(api.requestAdvice).not.toHaveBeenCalled();
+    expect(api.attemptPractice).not.toHaveBeenCalled();
+  });
+
+  it('显式请求防双重点击，未知结果复用 operationId，已知终态的新重试使用新身份', async () => {
+    const user = userEvent.setup();
+    let rejectFirst: ((reason: Error) => void) | undefined;
+    vi.mocked(api.today).mockResolvedValue(today({ practice: practice(), attempt: attempt(), adviceSettings: adviceSettings(), advice: adviceState({ canRequest: true }) }));
+    vi.mocked(api.requestAdvice)
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectFirst = reject; }))
+      .mockResolvedValueOnce(adviceState({ status: 'failed', message: '本次点评失败', canRetry: true }))
+      .mockResolvedValueOnce(adviceState({ status: 'ready', message: '建议已准备好', feedback: modelFeedback() }));
+    renderToday();
+    const request = await screen.findByRole('button', { name: '获取AI建议' });
+    await user.click(request);
+    await user.click(request);
+    expect(api.requestAdvice).toHaveBeenCalledTimes(1);
+    await act(async () => { rejectFirst?.(new Error('网络结果未知')); });
+    await user.click(await screen.findByRole('button', { name: '安全重试请求' }));
+    expect(await screen.findByRole('button', { name: '重新请求点评' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '重新请求点评' }));
+    expect(await screen.findByText('模型建议摘要')).toBeVisible();
+    expect(api.requestAdvice).toHaveBeenCalledTimes(3);
+    const calls = vi.mocked(api.requestAdvice).mock.calls;
+    expect(calls[0][1]).toBe(calls[1][1]);
+    expect(calls[0][2]).toBe(false);
+    expect(calls[1][2]).toBe(false);
+    expect(calls[2][1]).not.toBe(calls[0][1]);
+    expect(calls[2][2]).toBe(true);
+  });
+
+  it('同一 attempt 的迟到 pending 状态不覆盖已 ready 的模型反馈', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const ready = adviceState({ status: 'ready', message: '建议已完成', feedback: modelFeedback() });
+    vi.mocked(api.today)
+      .mockResolvedValueOnce(today({ practice: practice(), attempt: attempt({ feedback: modelFeedback() }), adviceSettings: adviceSettings(), advice: ready, automation: automation({ state: 'collecting' }) }))
+      .mockResolvedValueOnce(today({ practice: practice(), attempt: attempt(), adviceSettings: adviceSettings(), advice: adviceState({ status: 'running', message: '旧状态仍在运行' }), automation: automation({ state: 'collecting' }) }));
+    renderToday();
+    expect(await screen.findByText('模型建议摘要')).toBeVisible();
+    await act(async () => vi.advanceTimersByTimeAsync(4000));
+    expect(screen.getByText('模型建议摘要')).toBeVisible();
+    expect(screen.getByText('AI建议')).toBeVisible();
+    expect(screen.queryByText('旧状态仍在运行')).toBeNull();
+  });
+
+  it('未启用或 legacy 响应仍只走既有模板路径', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.today).mockResolvedValue(today({ practice: practice(), adviceSettings: adviceSettings({ enabled: false }) }));
+    vi.mocked(api.attemptPractice).mockResolvedValue(attempt());
+    vi.mocked(api.feedback).mockResolvedValue(feedback);
+    renderToday();
+    await user.type(await screen.findByLabelText('你的输出'), '旧路径回答');
+    await user.click(screen.getByRole('button', { name: '保存输出' }));
+    await user.click(await screen.findByText('核对要点'));
+    expect(await screen.findByText('模板未判断正确性。')).toBeVisible();
+    expect(api.advice).not.toHaveBeenCalled();
+    expect(api.requestAdvice).not.toHaveBeenCalled();
+    expect(api.feedback).toHaveBeenCalledWith('attempt-1', 'practice-1', 'template');
   });
 });

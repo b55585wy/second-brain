@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { APP_URL, PROJECT_ROOT, checkRuntime, checkFiles, openBrowser, runApp } from './launch.mjs';
+import { riffCompatible } from '../server/siyuan-version.mjs';
 
 export const NATIVE_PORT = 19006;
 export const NATIVE_URL = 'http://127.0.0.1:' + NATIVE_PORT;
@@ -26,7 +27,7 @@ function nativeState(packet) {
   const data = packet?.data;
   const version = typeof data === 'string' ? data : data?.version;
   if (packet?.code !== 0 || !validVersion(version)) return 'wrong';
-  return version === '3.8.8' ? 'ready' : 'unverified';
+  return riffCompatible(version) ? 'ready' : 'unverified';
 }
 
 function nativeCompatible(state, warn) {

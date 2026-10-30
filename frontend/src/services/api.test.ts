@@ -190,6 +190,27 @@ describe('飞书学习固定线协议', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ operationId: 'operation-registration' });
   });
 
+  it('cards registration GET 只读，显式 start/cancel POST body 各自只有 operationId', async () => {
+    const registration = { state: 'waiting', url: 'https://example.test/cards/auth', qrDataUrl: 'data:image/png;base64,SYNTHETIC', expiresAt: '2099-01-01T00:00:00.000Z', message: '请扫码', error: null };
+    const fetchMock = mockFetch({ data: registration });
+    await expect(api.feishuCardRegistration()).resolves.toEqual(registration);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/feishu-chat/cards/registration', expect.objectContaining({ method: 'GET', body: undefined }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: registration }));
+    await expect(api.startFeishuCardRegistration('operation-card-start')).resolves.toEqual(registration);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/v1/feishu-chat/cards/registration', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ operationId: 'operation-card-start' });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: { ...registration, state: 'idle' } }));
+    await expect(api.cancelFeishuCardRegistration('operation-card-cancel')).resolves.toEqual({ ...registration, state: 'idle' });
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/v1/feishu-chat/cards/registration/cancel', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ operationId: 'operation-card-cancel' });
+  });
+
+  it('PUT 只在提供时附加 cardsEnabled，旧字段保持原样', async () => {
+    const fetchMock = mockFetch({ data: { ...rawStatus, cardsEnabled: false } });
+    await api.saveFeishuChat({ enabled: true, remindersEnabled: true, reminderLocalTime: '20:30', cardsEnabled: false }, 16, 'operation-chat-cards');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ operationId: 'operation-chat-cards', expectedRevision: 16, enabled: true, remindersEnabled: true, reminderLocalTime: '20:30', cardsEnabled: false });
+  });
+
   it('PUT 只发送 operationId、独立 expectedRevision 和三个配置字段', async () => {
     const fetchMock = mockFetch({ data: rawStatus });
     await api.saveFeishuChat({ enabled: true, remindersEnabled: true, reminderLocalTime: '20:30' }, 16, 'operation-chat-save');

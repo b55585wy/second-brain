@@ -1,4 +1,4 @@
-import type { Automation, Connection, DailyPlan, Dashboard, Feedback, Job, Knowledge, LearningProfile, ListData, Practice, PracticeAttempt, ReviewAnswer, ReviewPrompt, SourceRef, TodayData, TodayHighlight } from '../types';
+import type { AdviceSettings, AdviceState, AdviceStatus, Automation, Connection, DailyPlan, Dashboard, Feedback, Job, Knowledge, LearningProfile, ListData, Practice, PracticeAttempt, ReviewAnswer, ReviewPrompt, SourceRef, TodayData, TodayHighlight } from '../types';
 
 type RecordValue = Record<string, unknown>;
 
@@ -214,6 +214,30 @@ export function normalizeJob(value: unknown): Job {
   };
 }
 
+export function normalizeFeedback(value: unknown): Feedback {
+  const item = record(value);
+  return {
+    ...item,
+    id: text(item.id),
+    attemptId: text(item.attemptId),
+    mode: text(item.mode, 'template'),
+    basis: text(item.basis),
+    summary: text(item.summary),
+    observations: Array.isArray(item.observations) ? item.observations.map((value) => {
+      const observation = record(value);
+      return {
+        ...observation,
+        criterionId: text(observation.criterionId),
+        finding: text(observation.finding, 'not_assessed'),
+        comment: text(observation.comment),
+        evidenceRefs: Array.isArray(observation.evidenceRefs) ? observation.evidenceRefs : [],
+      };
+    }) : [],
+    nextActions: strings(item.nextActions),
+    limitations: strings(item.limitations),
+  } as Feedback;
+}
+
 export function normalizeAttempt(value: unknown): PracticeAttempt {
   const attempt = record(value);
   return {
@@ -223,7 +247,7 @@ export function normalizeAttempt(value: unknown): PracticeAttempt {
     output: text(attempt.output),
     assistanceLevel: text(attempt.assistanceLevel, 'none'),
     evidenceRefs: Array.isArray(attempt.evidenceRefs) ? attempt.evidenceRefs as PracticeAttempt['evidenceRefs'] : [],
-    feedback: attempt.feedback ? record(attempt.feedback) as unknown as Feedback : null,
+    feedback: attempt.feedback ? normalizeFeedback(attempt.feedback) : null,
   } as PracticeAttempt;
 }
 
@@ -245,6 +269,40 @@ export function normalizeAutomation(value: unknown): Automation {
   };
 }
 
+function boundedInteger(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 20 ? value : fallback;
+}
+
+export function normalizeAdviceSettings(value: unknown): AdviceSettings {
+  const item = record(value);
+  return {
+    enabled: item.enabled === true,
+    dailyCallLimit: boundedInteger(item.dailyCallLimit, 3),
+    revision: revision(item.revision),
+    callsToday: boundedInteger(item.callsToday, 0),
+    remainingToday: boundedInteger(item.remainingToday, 0),
+    modelConfigured: item.modelConfigured === true,
+  };
+}
+
+const adviceStatuses = new Set<AdviceStatus>(['off', 'idle', 'queued', 'running', 'ready', 'failed', 'uncertain', 'limited', 'unavailable', 'stale']);
+
+export function normalizeAdviceState(value: unknown): AdviceState {
+  const item = record(value);
+  const candidate = text(item.status) as AdviceStatus;
+  const lastError = item.lastError === null ? null : record(item.lastError);
+  return {
+    attemptId: text(item.attemptId),
+    status: adviceStatuses.has(candidate) ? candidate : 'unavailable',
+    jobId: typeof item.jobId === 'string' ? item.jobId : null,
+    feedback: item.feedback ? normalizeFeedback(item.feedback) : null,
+    message: text(item.message),
+    canRequest: item.canRequest === true,
+    canRetry: item.canRetry === true,
+    lastError: lastError ? { code: text(lastError.code), message: text(lastError.message), retryable: false } : null,
+  };
+}
+
 export function normalizeToday(value: unknown): TodayData {
   const item = record(value);
   const highlights = Array.isArray(item.highlights) ? item.highlights.map((value): TodayHighlight => {
@@ -258,7 +316,7 @@ export function normalizeToday(value: unknown): TodayData {
       sourceRefs: sourceRefs(highlight.sourceRefs),
     };
   }) : [];
-  return {
+  const result: TodayData = {
     date: text(item.date),
     profile: normalizeProfile(item.profile),
     automation: normalizeAutomation(item.automation),
@@ -267,4 +325,7 @@ export function normalizeToday(value: unknown): TodayData {
     attempt: item.attempt ? normalizeAttempt(item.attempt) : null,
     generatedAt: typeof item.generatedAt === 'string' ? item.generatedAt : null,
   };
+  if (item.adviceSettings !== undefined) result.adviceSettings = normalizeAdviceSettings(item.adviceSettings);
+  if (item.advice !== undefined) result.advice = item.advice === null ? null : normalizeAdviceState(item.advice);
+  return result;
 }

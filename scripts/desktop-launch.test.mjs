@@ -26,7 +26,7 @@ test('health probes require product readiness and compatible native identity', a
   }), 'ready');
   assert.equal(calls[0][0], APP_URL + '/api/health');
   assert.equal(calls[0][1].redirect, 'error');
-  for (const data of ['3.8.8', { version: '3.8.8' }]) {
+  for (const data of ['3.8.8', { version: '3.8.8' }, '3.8.9', { version: '3.8.9' }]) {
     assert.equal(await probeService('native', async (url, request) => {
       assert.equal(url, NATIVE_URL + '/api/system/version'); assert.equal(request.method, 'POST'); assert.equal(request.body, '{}');
       return jsonResponse({ code: 0, data });
@@ -41,7 +41,7 @@ test('health probes require product readiness and compatible native identity', a
 });
 
 test('valid unverified native versions remain identifiable without claiming Riff compatibility', async () => {
-  for (const version of ['3.8.9', '3.8.9-rc.1', '4.0.0', '3.8.8+build.1']) {
+  for (const version of ['3.8.10', '3.8.9-rc.1', '4.0.0', '3.8.8+build.1']) {
     for (const data of [version, { version }]) {
       assert.equal(await probeService('native', async () => jsonResponse({ code: 0, data })), 'unverified', version);
     }
@@ -220,19 +220,32 @@ test('warm desktop starts/reuses native then opens existing product without crea
 });
 
 for (const productState of ['closed', 'ready']) {
-  test(`a real 3.8.9 version response permits ${productState === 'closed' ? 'starting' : 'reusing'} the knowledge and Feishu service`, async () => {
+  test(`a verified 3.8.9 version response permits ${productState === 'closed' ? 'starting' : 'reusing'} the knowledge and Feishu service`, async () => {
     const f = desktopFixture(productState); const native = nativeFixture();
     native.options.probe = () => probeService('native', async () => jsonResponse({ code: 0, data: '3.8.9' }));
     native.options.inspect = async () => [owner()];
     f.options.native = () => ensureNative(native.options);
     const result = await launchDesktop(f.options);
-    assert.equal(result.nativeReady, false);
+    assert.equal(result.nativeReady, true);
     assert.equal(result.reused, productState === 'ready');
     assert.equal(f.calls.filter(call => call === 'run').length, productState === 'closed' ? 1 : 0);
     assert.equal(f.calls.filter(call => call === 'create').length, productState === 'closed' ? 1 : 0);
     assert.equal(f.calls.filter(call => call === 'open').length, productState === 'ready' ? 1 : 0);
     assert.equal(native.calls.some(Array.isArray), false);
-    assert.match(native.warnings[0], /Feishu.*available/i);
+    assert.equal(native.warnings.length, 0);
+    assert.equal(f.calls.at(-1), 'unlock');
+  });
+}
+
+for (const productState of ['closed', 'ready']) {
+  test(`an unverified 3.8.10 version still permits ${productState === 'closed' ? 'starting' : 'reusing'} the learning service with a warning`, async () => {
+    const f = desktopFixture(productState); const native = nativeFixture();
+    native.options.probe = () => probeService('native', async () => jsonResponse({ code: 0, data: '3.8.10' }));
+    native.options.inspect = async () => [owner()];
+    f.options.native = () => ensureNative(native.options);
+    const result = await launchDesktop(f.options);
+    assert.equal(result.nativeReady, false); assert.equal(result.reused, productState === 'ready');
+    assert.equal(native.calls.some(Array.isArray), false); assert.match(native.warnings[0], /Feishu.*available/i);
     assert.equal(f.calls.at(-1), 'unlock');
   });
 }

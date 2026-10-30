@@ -1,5 +1,4 @@
 // @vitest-environment node
-import { mkdtemp, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { api, sourceRefInputs } from './api';
@@ -23,9 +22,8 @@ beforeAll(async () => {
   }
   const require = createRequire(import.meta.url);
   const { createApp } = require('../../../server/app.mjs') as { createApp(options: Record<string, unknown>): TestApp };
-  const temporaryBase = join(process.cwd(), '.tmp');
-  await mkdir(temporaryBase, { recursive: true });
-  const root = await mkdtemp(join(temporaryBase, 'api-contract-'));
+  const { scratch } = require('../../../tests/backend/helpers.mjs') as { scratch(): string };
+  const root = scratch();
   app = createApp({
     root,
     dataDir: join(root, 'data'),

@@ -104,11 +104,15 @@ export function validateEntity(entity, value) {
     const fields = entity === 'attempts' ? [...FIELDS.attempts.filter(key => key !== 'feedback'), 'latestFeedbackId'] : FIELDS[entity];
     shape(value, fields); localId(value.id);
   }
-  if (['projects', 'knowledge', 'practices', 'outputs', 'focusArtifacts'].includes(entity)) versioned(value);
+  if (['projects', 'knowledge', 'practices', 'outputs', 'focusArtifacts', 'adviceSelections'].includes(entity)) versioned(value);
   if ('projectId' in value) nullable(value.projectId, localId);
   if ('sourceRefs' in value) array(value.sourceRefs, sourceRef, 50);
   if ('evidenceRefs' in value) array(value.evidenceRefs, evidence, 50);
   switch (entity) {
+    case 'adviceSelections':
+      localId(value.feedbackId); localId(value.attemptId); nullable(value.outputId, localId); instant(value.selectedAt);
+      choice(value.state, ['saved', 'dismissed'], 'state');
+      requireValue(value.id === value.feedbackId && (value.state !== 'saved' || value.outputId !== null), '建议选择身份或已保存输出无效。'); break;
     case 'focusArtifacts':
       dateString(value.date); timeZone(value.timeZone); nullable(value.profileRevision, revision); nullable(value.scopeRevision, revision); nullable(value.modelConfigKey, hash);
       nullable(value.practiceId, localId); instant(value.generatedAt); provenance(value.provenance);
@@ -148,7 +152,7 @@ export function validateEntity(entity, value) {
       for (const key of ['sessionId', 'presentationId', 'knowledgeId']) localId(value[key]); externalId(value.cardId); choice(value.rating, ['again', 'hard', 'good', 'easy'], 'rating'); integer(value.elapsedMs, 'elapsedMs', 0, 3600000); operationId(value.operationId); choice(value.status, ['confirmed'], 'status'); instant(value.committedAt);
       shape(value.riffEvidence, ['method', 'externalResponseId', 'checkedAt']); choice(value.riffEvidence.method, ['response', 'read_after_write'], 'method'); nullable(value.riffEvidence.externalResponseId, externalId); instant(value.riffEvidence.checkedAt); break;
     case 'jobHistory':
-      shape(value, ['id', 'type', 'trigger', 'status', 'commitState', 'operationId', 'progress', 'createdAt', 'updatedAt', 'finishedAt', 'error']); localId(value.id); choice(value.type, ['codex_sync', 'manual_dialogue_import', 'source_import', 'knowledge_sync', 'daily_plan_generate', 'practice_feedback', 'review_response', 'reconcile', 'learning_automation'], 'type'); choice(value.trigger, ['user', 'scheduler', 'recovery'], 'trigger');
+      shape(value, ['id', 'type', 'trigger', 'status', 'commitState', 'operationId', 'progress', 'createdAt', 'updatedAt', 'finishedAt', 'error']); localId(value.id); choice(value.type, ['codex_sync', 'manual_dialogue_import', 'source_import', 'knowledge_sync', 'daily_plan_generate', 'practice_feedback', 'answer_advice', 'feishu_card_action', 'review_response', 'reconcile', 'learning_automation'], 'type'); choice(value.trigger, ['user', 'scheduler', 'recovery', 'automatic'], 'trigger');
       choice(value.status, ['queued', 'running', 'succeeded', 'failed', 'blocked', 'uncertain', 'cancelled'], 'status'); choice(value.commitState, ['not_applicable', 'not_started', 'may_have_committed', 'confirmed', 'not_committed'], 'commitState'); operationId(value.operationId);
       shape(value.progress, ['completed', 'total', 'unit']); count(value.progress.completed); nullable(value.progress.total, count); requireValue(value.progress.total === null || value.progress.completed <= value.progress.total, '作业进度无效。'); choice(value.progress.unit, ['threads', 'messages', 'items', 'steps'], 'unit'); instant(value.createdAt); instant(value.updatedAt); nullable(value.finishedAt, instant); nullable(value.error, error); break;
   }

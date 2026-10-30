@@ -304,6 +304,8 @@ export interface FeishuChatStatus {
   configured: boolean;
   lastReceivedAt: string | null;
   lastSentAt: string | null;
+  cardsEnabled?: boolean;
+  lastCardActionAt?: string | null;
   state?: string;
   lastError?: { code: string; message: string; retryable: boolean } | null;
   snoozedUntil?: string | null;
@@ -315,7 +317,7 @@ export interface FeishuChatStatus {
   };
 }
 
-export type FeishuChatInput = Pick<FeishuChatStatus, 'enabled' | 'remindersEnabled' | 'reminderLocalTime'>;
+export type FeishuChatInput = Pick<FeishuChatStatus, 'enabled' | 'remindersEnabled' | 'reminderLocalTime'> & Partial<Pick<FeishuChatStatus, 'cardsEnabled'>>;
 export interface FeishuChatEntry {
   url: string | null;
   qrDataUrl: string | null;
@@ -397,6 +399,30 @@ export interface Automation {
   lastError: { code: string; message: string; retryable: boolean } | null;
 }
 
+export interface AdviceSettings {
+  enabled: boolean;
+  dailyCallLimit: number;
+  revision: number;
+  callsToday: number;
+  remainingToday: number;
+  modelConfigured: boolean;
+}
+
+export type AdviceSettingsInput = Pick<AdviceSettings, 'enabled' | 'dailyCallLimit'>;
+
+export type AdviceStatus = 'off' | 'idle' | 'queued' | 'running' | 'ready' | 'failed' | 'uncertain' | 'limited' | 'unavailable' | 'stale';
+
+export interface AdviceState {
+  attemptId: ID;
+  status: AdviceStatus;
+  jobId: ID | null;
+  feedback: Feedback | null;
+  message: string;
+  canRequest: boolean;
+  canRetry: boolean;
+  lastError: { code: string; message: string; retryable: false } | null;
+}
+
 export interface TodayHighlight {
   id: string;
   title: string;
@@ -414,6 +440,8 @@ export interface TodayData {
   practice: Practice | null;
   attempt: PracticeAttempt | null;
   generatedAt: string | null;
+  adviceSettings?: AdviceSettings;
+  advice?: AdviceState | null;
 }
 
 export interface ListData<T> { items: T[]; total: number }

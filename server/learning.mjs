@@ -188,10 +188,14 @@ export class Learning {
     const evidenceRefs = this.sources.evidence(body.evidenceRefs);
     const fields = { practiceId, output: text(body.output, 'output', 100000), assistanceLevel: choice(body.assistanceLevel, ['none', 'hint', 'partial', 'full', 'unknown'], 'assistanceLevel'),
       evidenceRefs, evidenceSnapshots: this.snapshots(evidenceRefs), submittedAt: now(), feedback: null };
-    const attempt = this.store.put('attempt', this.sources.secrets.clean(fields));
-    this.store.put('practice', { ...practice, status: 'completed' });
-    this.finishItems(item => item.practiceId === practiceId);
-    return attempt;
+    return this.store.transaction(() => {
+      const attempt = this.store.put('attempt', this.sources.secrets.clean(fields));
+      this.store.put('practice', { ...practice, status: 'completed' });
+      this.finishItems(item => item.practiceId === practiceId);
+      // Advice scheduling must not undo a saved answer when the optional queue is unavailable.
+      try { this.onAttempt?.(attempt); } catch {}
+      return attempt;
+    });
   }
 
   checkObservations(observations, practice) {
@@ -214,6 +218,7 @@ export class Learning {
     requireValue(body.allowTemplateFallback === undefined || typeof body.allowTemplateFallback === 'boolean', 'allowTemplateFallback 必须为布尔值。');
     const attempt = this.store.require('attempt', attemptId);
     const practice = this.store.require('practice', attempt.practiceId);
+    if (mode === 'template' && attempt.feedback) return { feedbackId: attempt.feedback.id, attemptId, feedback: attempt.feedback };
     let result = body.manual;
     let fallback = false;
     if (mode === 'model') {
@@ -226,10 +231,18 @@ export class Learning {
       nextActions: ['按 rubric 检查输出，并补充可验证的例子或执行证据。'],
       limitations: ['本地清单不判断正确性，也不推断技能掌握。', ...(attempt.evidenceRefs.some(ref => ref.kind === 'url') ? ['URL 内容未抓取或检查。'] : []), ...(fallback ? ['模型不可用，已明确回退为模板反馈。'] : [])],
     };
+    return this.saveFeedback(attemptId, mode, result);
+  }
+
+  saveFeedback(attemptId, mode, result) {
+    const attempt = this.store.require('attempt', attemptId);
+    const practice = this.store.require('practice', attempt.practiceId);
+    choice(mode, ['template', 'model', 'manual'], 'mode');
     onlyFields(result, ['summary', 'observations', 'nextActions', 'limitations']);
+    const profile = { ...this.domain.profile(), revision: practice.provenance?.profileRevision ?? this.domain.profile().revision };
     const feedback = this.store.put('feedback', this.sources.secrets.clean({ attemptId, mode, basis: { manual: 'user_judgment', template: 'deterministic_checklist', model: 'model_suggestion' }[mode],
       summary: text(result.summary, 'summary', 4000), observations: this.checkObservations(result.observations, practice),
-      nextActions: strings(result.nextActions, 'nextActions', 10, 2000), limitations: strings(result.limitations, 'limitations', 10, 2000), provenance: this.provenance(mode, practice.sourceRefs) }));
+      nextActions: strings(result.nextActions, 'nextActions', 10, 2000), limitations: strings(result.limitations, 'limitations', 10, 2000), provenance: this.provenance(mode, practice.sourceRefs, profile) }));
     this.store.put('attempt', { ...attempt, feedback });
     return { feedbackId: feedback.id, attemptId, feedback };
   }

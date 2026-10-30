@@ -10,6 +10,7 @@ const KINDS = {
   practices: 'practice', attempts: 'attempt', feedback: 'feedback', outputs: 'output', plans: 'daily-plan',
   reviewSessions: 'review-session', reviewResponses: 'review-response', jobHistory: 'job-history',
   focusArtifacts: 'focus-artifact',
+  adviceSelections: 'advice-selection',
 };
 const JOB_FIELDS = ['id', 'type', 'trigger', 'status', 'commitState', 'operationId', 'progress', 'createdAt', 'updatedAt', 'finishedAt', 'error'];
 const canonical = value => JSON.stringify(normalize(value));
@@ -76,6 +77,7 @@ export class Backup {
       for (const entity of Object.keys(KINDS)) for (const record of data[entity]) {
         if (entity === 'attempts' && selected.practices.has(record.practiceId)) add(entity, record.id);
         if (entity === 'feedback' && selected.attempts.has(record.attemptId)) add(entity, record.id);
+        if (entity === 'adviceSelections' && (selected.attempts.has(record.attemptId) || selected.feedback.has(record.feedbackId))) add(entity, record.id);
         if (entity === 'reviewResponses' && selected.reviewSessions.has(record.sessionId)) add(entity, record.id);
         if (entity === 'plans' && record.items.some(item => selected.practices.has(item.practiceId) || selected.outputs.has(item.outputId) || item.knowledgeIds.some(key => selected.knowledge.has(key)))) add(entity, record.id);
         if (!selected[entity].has(entityId(entity, record))) continue;
@@ -95,6 +97,7 @@ export class Backup {
     if (entity === 'attempts' || entity === 'outputs') add('practices', record.practiceId);
     if (entity === 'focusArtifacts') add('practices', record.practiceId);
     if (entity === 'feedback') add('attempts', record.attemptId);
+    if (entity === 'adviceSelections') { add('feedback', record.feedbackId); add('attempts', record.attemptId); add('outputs', record.outputId); }
     if (entity === 'reviewResponses') { add('reviewSessions', record.sessionId); add('knowledge', record.knowledgeId); }
     const visit = value => {
       if (Array.isArray(value)) { value.forEach(visit); return; }
@@ -138,7 +141,9 @@ export class Backup {
     onlyFields(document, ['schemaVersion', 'productVersion', 'exportedAt', 'sourceContentIncluded', 'redactionCount', 'data']);
     if (document.schemaVersion !== EXPORT_SCHEMA) fail(422, 'IMPORT_SCHEMA_UNSUPPORTED', '不支持此备份版本。');
     onlyFields(document.data, ['profile', ...Object.keys(KINDS)]);
-    if (!Object.hasOwn(document.data, 'focusArtifacts')) document = { ...document, data: { ...document.data, focusArtifacts: [] } };
+    for (const entity of ['focusArtifacts', 'adviceSelections']) {
+      if (!Object.hasOwn(document.data, entity)) document = { ...document, data: { ...document.data, [entity]: [] } };
+    }
     requireValue(Object.keys(document.data).length === 1 + Object.keys(KINDS).length, '备份缺少必要集合。');
     this.size(document);
     const profile = document.data.profile;

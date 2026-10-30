@@ -103,9 +103,10 @@ export class AdviceDiscussion {
       let outputId = draft.outputId;
       if (decision === 'saved' && !outputId) {
         const candidate = draft.candidate;
+        const explanation = draft.reply ? ['本轮讲解（AI参考）', draft.reply] : [];
         const output = this.learning.output({ projectId: material.practice.projectId, practiceId: material.practice.id,
           title: truncate(`回答建议｜${material.practice.goal} · v${draft.version}`, 200),
-          content: [candidate.summary, ...candidate.observations.map(item => item.comment), '下一步：', ...candidate.nextActions, ...candidate.limitations].join('\n\n'),
+          content: [...explanation, candidate.summary, ...candidate.observations.map(item => item.comment), '下一步：', ...candidate.nextActions, ...candidate.limitations].join('\n\n'),
           goal: material.practice.goal, status: 'final', sourceRefs: material.practice.sourceRefs.map(ref => ({ sourceId: ref.sourceId })), evidenceRefs: [] });
         outputId = output.id;
       }

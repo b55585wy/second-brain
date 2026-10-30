@@ -31,7 +31,7 @@ async function fixture(t, { kind = 'manual' } = {}) {
     provider.calls++; provider.inputs.push(structuredClone(input)); await provider.before?.();
     options.onUsage?.({ prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 });
     if (provider.error) throw provider.error;
-    return { reply: 'Compare the expected result with the observed result.', candidate: { summary: `Revised suggestion ${provider.calls}.`,
+    return { reply: provider.reply ?? 'Compare the expected result with the observed result.', candidate: { summary: `Revised suggestion ${provider.calls}.`,
       observations: input.base.rubric.map(item => ({ criterionId: item.id, finding: 'not_assessed', comment: 'Use one observable count.', evidenceRefs: [], outputExcerpt: '' })),
       nextActions: ['Record the expected count.'], limitations: ['The original answer has not changed.'] } };
   };
@@ -61,15 +61,33 @@ test('one discussion produces a candidate version without changing the original 
   assert.equal(f.advice.calls().length, 1); assert.deepEqual(f.advice.calls()[0].usage, { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 });
 });
 
-test('explicit saves are once per candidate version and later drafts preserve earlier saved outputs', async t => {
-  const f = await fixture(t); const first = await f.wait(f.submit());
+test('explicit saves retain the latest explanation once per version and preserve earlier outputs', async t => {
+  const f = await fixture(t); f.provider.reply = 'First explanation: compare the count before and after replay.';
+  const originalAttempt = f.app.store.require('attempt', f.attempt.id);
+  const first = await f.wait(f.submit());
   const saved = f.discussion.save(f.feedback.id, { expectedVersion: first.version, operationId: operation() }); assert.equal(saved.saved, true);
   f.discussion.save(f.feedback.id, { expectedVersion: first.version, operationId: operation() });
   const oldOutput = f.app.store.all('output')[0]; assert.equal(f.app.store.all('output').length, 1);
+  assert.ok(oldOutput.content.startsWith(`本轮讲解（AI参考）\n\n${first.reply}\n\n${first.candidate.summary}`));
+  f.provider.reply = 'Latest explanation: replay one identity and expect exactly one resulting record.';
   const second = await f.wait(f.submit()); assert.equal(second.saved, false); assert.equal(second.canSave, true);
   f.discussion.save(f.feedback.id, { expectedVersion: second.version, operationId: operation() });
   assert.equal(f.app.store.all('output').length, 2); assert.deepEqual(f.app.store.require('output', oldOutput.id), oldOutput);
-  assert.notEqual(f.app.store.require('advice-selection', f.feedback.id).outputId, oldOutput.id);
+  const latestOutputId = f.app.store.require('advice-selection', f.feedback.id).outputId;
+  assert.notEqual(latestOutputId, oldOutput.id);
+  const latestOutput = f.app.store.require('output', latestOutputId);
+  assert.ok(latestOutput.content.startsWith(`本轮讲解（AI参考）\n\n${second.reply}\n\n${second.candidate.summary}`));
+  assert.ok(!latestOutput.content.includes(first.reply));
+  assert.deepEqual(f.app.store.require('attempt', f.attempt.id), originalAttempt);
+  assert.deepEqual(f.app.store.require('feedback', f.feedback.id), f.feedback);
+});
+
+test('saving original version zero keeps the exact existing content without an explanation label', async t => {
+  const f = await fixture(t); assert.equal(f.discussion.public(f.feedback.id).reply, null);
+  f.discussion.save(f.feedback.id, { expectedVersion: 0, operationId: operation() });
+  const output = f.app.store.all('output')[0];
+  assert.equal(output.content, 'State the expected count.\n\nDescribe the expected record count.\n\n下一步：\n\nWrite one expected result.\n\nNo mastery claim.');
+  assert.ok(!output.content.includes('本轮讲解（AI参考）')); assert.equal(f.provider.calls, 0);
 });
 
 test('dismissing a new version retains the historical saved output and never changes candidate content', async t => {

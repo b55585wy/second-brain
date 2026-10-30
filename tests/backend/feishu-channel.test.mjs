@@ -89,3 +89,71 @@ test('native SDK sending includes the durable UUID and never uses high-level ret
   assert.deepEqual(sent[0], { params: { receive_id_type: 'chat_id' }, data: { receive_id: 'oc_fixture', msg_type: 'text', content: JSON.stringify({ text: '中文练习' }), uuid: 'durable-uuid' } });
   assert.ok(handlers.has('message')); assert.ok(handlers.has('reconnecting')); await transport.disconnect();
 });
+
+// Requirements: known platform rejection is not ambiguous delivery; transport loss and
+// malformed replies remain uncertain; create/patch each send once and never leak payloads.
+async function nativeTransport(behavior) {
+  const calls = [];
+  const request = async body => { calls.push(body); return behavior(); };
+  const native = { connect: async () => {}, disconnect: async () => {}, on() {},
+    rawClient: { im: { v1: { message: { create: request, patch: request } } } } };
+  const transport = await createFeishuTransport({ appId: 'cli_fixture', appSecret: 'fixture', apiBase: 'https://open.feishu.cn',
+    onMessage() {}, onState() {}, onError() {}, loadSdk: async () => ({ Domain: { Feishu: 'feishu' }, createLarkChannel: () => native }) });
+  return { transport, calls };
+}
+
+const privatePayload = 'private-source-and-credential';
+const rejections = [
+  ['business result', () => ({ code: 190001, msg: privatePayload }), 'FEISHU_REQUEST_REJECTED', 190001, false],
+  ['HTTP business rejection', () => { throw { response: { status: 400, data: { code: 190001, msg: privatePayload } } }; }, 'FEISHU_REQUEST_REJECTED', 190001, false],
+  ['HTTP missing scope', () => { throw { response: { status: 403, data: { code: 99991663, msg: privatePayload } } }; }, 'SCOPE_FORBIDDEN', 99991663, false],
+  ['HTTP rate limit', () => { throw { response: { status: 429, data: { code: 99991400, msg: privatePayload } } }; }, 'RATE_LIMITED', 99991400, true],
+];
+
+for (const update of [false, true]) {
+  for (const [name, behavior, code, providerCode, retryable] of rejections) {
+    test(`native ${update ? 'patch' : 'create'} preserves a known ${name} without replay or private diagnostics`, async () => {
+      const f = await nativeTransport(behavior);
+      await assert.rejects(f.transport.send({ chatId: 'oc_fixture', text: 'fixture', uuid: 'stable-id',
+        ...(update ? { updateMessageId: 'om_existing', card: { schema: '2.0' } } : {}) }), error => {
+        assert.equal(error.code, code); assert.equal(error.providerCode, providerCode);
+        assert.equal(error.uncertain, false); assert.equal(error.retryable, retryable);
+        assert.ok(!JSON.stringify({ ...error, message: error.message }).includes(privatePayload)); return true;
+      });
+      assert.equal(f.calls.length, 1);
+    });
+  }
+}
+
+const ambiguous = [
+  ['network timeout', () => { throw { code: 'ETIMEDOUT', message: privatePayload }; }],
+  ['untyped HTTP error', () => { throw { response: { status: 503, data: { message: privatePayload } } }; }],
+  ['HTTP error with zero code', () => { throw { response: { status: 400, data: { code: 0, msg: privatePayload } } }; }],
+  ['null reply', () => null], ['missing code', () => ({})],
+  ['string code', () => ({ code: '190001', msg: privatePayload })],
+  ['negative code', () => ({ code: -1, msg: privatePayload })],
+  ['unsafe integer code', () => ({ code: Number.MAX_SAFE_INTEGER + 1, msg: privatePayload })],
+];
+
+for (const update of [false, true]) {
+  for (const [name, behavior] of ambiguous) {
+    test(`native ${update ? 'patch' : 'create'} leaves ${name} uncertain without retrying`, async () => {
+      const f = await nativeTransport(behavior);
+      await assert.rejects(f.transport.send({ chatId: 'oc_fixture', text: 'fixture', uuid: 'stable-id',
+        ...(update ? { updateMessageId: 'om_existing', card: { schema: '2.0' } } : {}) }), error => {
+        assert.equal(error.code, 'CONNECTION_UNAVAILABLE'); assert.equal(error.uncertain, undefined);
+        assert.equal(error.providerCode, undefined); assert.ok(!error.message.includes(privatePayload)); return true;
+      });
+      assert.equal(f.calls.length, 1);
+    });
+  }
+}
+
+test('successful create without a message ID stays uncertain; successful patch retains the existing ID', async () => {
+  const created = await nativeTransport(() => ({ code: 0 }));
+  await assert.rejects(created.transport.send({ chatId: 'oc_fixture', text: 'fixture', uuid: 'stable-id' }),
+    error => error.code === 'CONNECTION_UNAVAILABLE' && error.uncertain === undefined);
+  const patched = await nativeTransport(() => ({ code: 0 }));
+  assert.deepEqual(await patched.transport.send({ chatId: 'oc_fixture', card: { schema: '2.0' }, updateMessageId: 'om_existing' }), { messageId: 'om_existing' });
+  assert.equal(created.calls.length, 1); assert.equal(patched.calls.length, 1);
+});

@@ -139,6 +139,14 @@ export class FeishuChat {
 
   process(message, inbox) {
     const command = message.content.replace(/[。！!]+$/, '');
+    if (['菜单', 'menu', '帮助', 'help'].includes(command)) {
+      const result = this.openMenu(inbox.id); this.complete(inbox); return result;
+    }
+    if (command === '当前状态') return this.reply(inbox, this.menuStatus());
+    if (command === '查看已有建议') {
+      const result = this.openExistingAdvice(inbox.id); this.complete(inbox);
+      if (!result.queued) this.queueReply(inbox.id, result.message); return result;
+    }
     if (['暂停', '暂停提醒'].includes(command)) {
       this.update({ remindersEnabled: false }); this.saveState({ snoozedUntil: null, snoozeId: null });
       return this.reply(inbox, '已暂停学习提醒。你仍可发送“今日练习”；发送“继续”恢复提醒。');
@@ -155,13 +163,12 @@ export class FeishuChat {
     if (['今日练习', '开始学习', '开始复习', '开始', '复习'].includes(command)) {
       this.saveState({ activeDiscussion: null });
       const interactive = this.config().cardsEnabled && !!this.cards;
-      const result = this.sendToday({ interactive }); this.complete(inbox);
-      if (!result.queued && !(interactive && result.alreadySent)) this.queueReply(inbox.id, this.sendMessage(result));
+      const result = this.sendToday({ interactive, requestedInboxId: inbox.id }); this.complete(inbox);
+      if (!result.queued) this.queueReply(inbox.id, this.sendMessage(result));
       return result;
     }
     if (['点评', '回答建议', '给点建议', 'advice'].includes(command)) return this.requestAdvice(inbox, false);
     if (['重新点评', '重试点评'].includes(command)) return this.requestAdvice(inbox, true);
-    if (['帮助', 'help'].includes(command)) return this.reply(inbox, '发送“今日练习”开始；直接回复题目作答。“独立：”“提示：”可注明辅助程度，未注明时记录为未知。发送“点评”查看回答建议；失败后可用“重新点评”。也可以发送“稍后”“暂停”或“继续”。');
     const discussion = this.routeDiscussion(message, inbox);
     return discussion ?? this.answer(message, inbox);
   }
@@ -220,17 +227,52 @@ export class FeishuChat {
     return digest([today.practice?.id, today.profile.revision, current.scopeRevision, current.modelKey, today.practice?.sourceRefs]);
   }
 
-  sendToday({ interactive = false } = {}) {
+  openMenu(requestId) {
+    this.assertEnabled(); text(requestId, 'requestId', 128);
+    if (!this.binding()) fail(409, 'INVALID_STATE', '请先绑定飞书私聊。');
+    if (!this.config().cardsEnabled || !this.cards) {
+      const item = this.queueReply(`menu:${requestId}`, '可发送“今日练习”开始、“查看已有建议”阅读现有反馈、“当前状态”查看进度。记忆闪卡请在知行网页打开，或启用互动卡片后再发送“菜单”。');
+      return { queued: item.status === 'pending', alreadySent: item.status === 'sent', deliveryState: item.status };
+    }
+    const item = this.queue(`menu:${requestId}`, '学习菜单：今日练习、记忆闪卡、已有建议和当前状态。', { purpose: 'menu', requestedInboxId: requestId });
+    const decorated = this.cards.decorateMenu(item);
+    return { queued: ['pending', 'sending'].includes(decorated.status), alreadySent: decorated.status === 'sent', deliveryState: decorated.status };
+  }
+
+  menuStatus() {
+    const today = this.automation.today(); const config = this.config();
+    return `今日：${today.attempt ? '回答已保存' : today.practice ? '练习待作答' : '尚无练习'}。\n飞书配置：${this.configured() ? '已就绪' : '未就绪'}；私聊${this.binding() ? '已绑定' : '未绑定'}。\n提醒：${config.remindersEnabled ? `开启（${config.reminderLocalTime}）` : '已暂停'}。`;
+  }
+
+  existingAdvice() {
+    const today = this.automation.today(); const records = this.store.all('feedback');
+    const currentId = today.attempt?.feedback?.id;
+    const ordered = [...records.filter(record => record.id === currentId), ...records.filter(record => record.id !== currentId)];
+    return ordered.find(record => { try { this.learning.advice.material(record.attemptId); return true; } catch { return false; } }) ?? null;
+  }
+
+  openExistingAdvice(requestId) {
+    const feedback = this.existingAdvice();
+    if (!feedback) return { queued: false, message: '暂时没有可查看的已有建议；回答练习后可明确发送“点评”请求新建议。' };
+    if (this.config().cardsEnabled && this.cards && this.discussion) {
+      const result = this.openDiscussion(feedback.id, { requestedInboxId: requestId });
+      return { ...result, message: result.queued ? '已有建议已加入发送队列。' : result.alreadySent ? '已有建议此前已发送，请查看已有卡片。' : this.sendMessage(result) };
+    }
+    const item = this.queue(`existing-advice:${requestId}`, adviceMessage(feedback), { purpose: 'advice_existing', feedbackId: feedback.id });
+    return { queued: item.status === 'pending', message: '已有建议此前已发送。' };
+  }
+
+  sendToday({ interactive = false, requestedInboxId = null } = {}) {
     this.assertEnabled();
     if (!this.binding()) fail(409, 'INVALID_STATE', '请先用配对码绑定飞书私聊。');
     const today = this.automation.today();
     const learningCard = interactive && this.config().cardsEnabled && !!this.cards;
     if (!today.practice || (today.attempt && !learningCard)) return { queued: false, alreadySent: false, practiceId: today.practice?.id ?? null, completed: !!today.attempt };
-    const item = learningCard ? this.queueLearningCard(today) : this.queuePractice(today, interactive ? 'interactive' : 'daily');
-    return { queued: item.status === 'pending' || item.status === 'sending', alreadySent: item.status === 'sent', practiceId: today.practice.id, deliveryState: item.status };
+    const item = learningCard ? this.queueLearningCard(today, requestedInboxId) : this.queuePractice(today, interactive ? 'interactive' : 'daily');
+    return { queued: item.status === 'pending' || item.status === 'sending', alreadySent: item.status === 'sent', practiceId: today.practice.id, completed: !!today.attempt, deliveryState: item.status };
   }
 
-  openDiscussion(feedbackId) {
+  openDiscussion(feedbackId, { requestedInboxId = null } = {}) {
     this.assertEnabled();
     if (!this.binding()) fail(409, 'INVALID_STATE', '请先绑定飞书私聊。');
     if (!this.config().cardsEnabled || !this.cards || !this.discussion) fail(409, 'INVALID_STATE', '请先启用飞书互动卡片。');
@@ -238,18 +280,19 @@ export class FeishuChat {
     const material = this.learning.advice.material(feedback.attemptId); const current = this.discussion.public(feedback.id);
     const today = this.automation.today(); const practiceContext = today.practice?.id === material.practice.id && today.attempt?.id === material.attempt.id
       ? this.context(today) : digest(material.context);
-    const item = this.queue(`open-discussion:${feedback.id}:v${current.version}`, `回答建议｜${discussionVersionLabel(current.version)}\n${current.candidate.summary}\n\n可继续讨论；满意后点击保存建议，当前不会自动保存。`, {
+    const item = this.requested(this.queue(`open-discussion:${feedback.id}:v${current.version}`, `回答建议｜${discussionVersionLabel(current.version)}\n${current.candidate.summary}\n\n可继续讨论；满意后点击保存建议，当前不会自动保存。`, {
       purpose: 'advice_discussion', feedbackId: feedback.id, attemptId: material.attempt.id, practiceId: material.practice.id,
-      practiceContext, discussionVersion: current.version, explicitDiscussion: true });
+      practiceContext, discussionVersion: current.version, explicitDiscussion: true }), requestedInboxId ?? `open-advice:${feedback.id}:v${current.version}`);
     const decorated = this.cards.decorateAdvice(item, { attemptId: material.attempt.id, practiceId: material.practice.id, practiceContext }, { feedback });
     return { queued: ['pending', 'sending'].includes(decorated.status), alreadySent: decorated.status === 'sent',
       feedbackId: feedback.id, version: current.version, practiceId: material.practice.id, deliveryState: decorated.status };
   }
 
   sendMessage(result) {
-    if (result.alreadySent) return '今天的练习已发送，直接回复题目即可作答。';
+    if (result.alreadySent) return result.completed ? '今天的回答已保存，学习卡片此前已发送；可发送“菜单”继续。' : '今天的练习此前已发送，请查看已有卡片或在知行网页继续。';
     if (result.completed) return '今天的输出已经保存，可以在知行网页查看。';
     if (result.deliveryState === 'uncertain') return '上次题目发送结果未确认，请先检查已收到的消息；也可在知行网页继续学习。';
+    if (result.deliveryState === 'failed') return '上次卡片发送失败，未重复发送；可在知行网页继续，或发送“菜单”查看其他入口。';
     if (result.practiceId) return '题目暂未送达，可以在知行网页继续学习。';
     return '当前还没有可作答的练习，准备好后会按设置提醒。';
   }
@@ -264,11 +307,16 @@ export class FeishuChat {
 
   queueReply(key, value) { return this.queue(`reply:${key}`, value, { purpose: 'reply' }); }
 
-  queueLearningCard(today) {
+  requested(item, requestId) {
+    return requestId && item.status === 'pending' && !item.requestedInboxId
+      ? this.store.put('feishu-chat-outbox', { ...item, requestedInboxId: requestId }, item.id) : item;
+  }
+
+  queueLearningCard(today, requestedInboxId = null) {
     const practice = today.practice; const attemptId = today.attempt?.id ?? null; const context = this.context(today);
     const text = `今日学习｜${practice.goal}\n${practice.prompt}\n\n${attemptId ? '回答已保存，可查看建议或进入记忆闪卡。' : '请在卡片中作答，也可以直接回复本条消息。'}`;
-    const item = this.queue(`learning-card:${today.date}:${practice.id}:${context}:${attemptId ?? 'unanswered'}`, text,
-      { purpose: 'learning_card', practiceId: practice.id, context, date: today.date, attemptId });
+    const item = this.requested(this.queue(`learning-card:${today.date}:${practice.id}:${context}:${attemptId ?? 'unanswered'}`, text,
+      { purpose: 'learning_card', practiceId: practice.id, context, date: today.date, attemptId }), requestedInboxId);
     return this.cards.decoratePractice(item, today);
   }
 
@@ -393,7 +441,16 @@ export class FeishuChat {
 
   deliverable(item) {
     if (!this.recipientCurrent(item)) return false;
-    if (item.purpose === 'card_update') return this.config().cardsEnabled && !!this.cards?.deliverable(item);
+    if (item.purpose === 'delivery_notice') {
+      const source = this.store.get('feishu-chat-outbox', item.noticeFor);
+      return !!source && source.purpose !== 'delivery_notice' && this.deliverable(source);
+    }
+    if (item.purpose === 'menu') return this.config().cardsEnabled && !!this.cards?.deliverable(item);
+    if (item.purpose === 'advice_existing') {
+      try { this.learning.advice.material(this.store.require('feedback', item.feedbackId).attemptId); return true; } catch { return false; }
+    }
+    if (item.purpose === 'card_update') return this.config().cardsEnabled && !!this.cards?.deliverable(item)
+      && (!item.menuPractice || this.learningCardCurrent(item));
     if (item.purpose === 'learning_card') return this.learningCardCurrent(item) && this.cards.deliverable(item);
     if (item.purpose === 'advice_discussion') {
       try { const current = this.discussion?.public(item.feedbackId); return !!current && current.status !== 'stale'
@@ -411,6 +468,7 @@ export class FeishuChat {
       await this.finishFeedback();
       this.finishDiscussions();
       await this.cards?.flush();
+      for (const item of this.store.all('feishu-chat-outbox')) this.queueDeliveryNotice(item);
       const queue = this.store.all('feishu-chat-outbox').filter(item => item.status === 'pending' && at(item.nextAttemptAt) <= +this.clock()).reverse().slice(0, 25);
       for (const item of queue) await this.deliver(item, send);
     } catch { this.error('INTERNAL_ERROR', '飞书学习记录正在等待本地恢复，请稍后再试。', true); }
@@ -436,10 +494,24 @@ export class FeishuChat {
       this.store.transaction(() => this.confirm(sending, result.messageId));
     } catch (error) {
       const uncertain = error.uncertain !== false;
-      const retry = !uncertain && error.retryable && sending.attempts < 3;
-      this.store.put('feishu-chat-outbox', { ...sending, status: uncertain ? 'uncertain' : retry ? 'pending' : 'failed', nextAttemptAt: retry ? new Date(+this.clock() + MINUTE).toISOString() : null }, item.id);
+      const retry = !uncertain && error.retryable && sending.attempts < 3 && sending.purpose !== 'delivery_notice';
+      const safe = publicError(error).body.error;
+      const lastError = { code: String(safe.code).slice(0, 100), retryable: !!safe.retryable };
+      if (Number.isSafeInteger(error.providerCode) && Math.abs(error.providerCode) <= 2147483647) lastError.providerCode = error.providerCode;
+      const failed = this.store.put('feishu-chat-outbox', { ...sending, status: uncertain ? 'uncertain' : retry ? 'pending' : 'failed',
+        nextAttemptAt: retry ? new Date(+this.clock() + MINUTE).toISOString() : null, lastError }, item.id);
       this.error(uncertain ? 'DELIVERY_UNCERTAIN' : 'CONNECTION_UNAVAILABLE', uncertain ? '飞书发送结果未确认，未自动重复发送。' : '飞书消息暂未送达，已保留学习记录。', !!retry);
+      const notice = this.queueDeliveryNotice(failed);
+      if (notice?.status === 'pending') await this.deliver(notice, send);
     }
+  }
+
+  queueDeliveryNotice(source) {
+    if (!source.card || !source.requestedInboxId || !['failed', 'uncertain'].includes(source.status)
+      || source.purpose === 'delivery_notice' || !this.deliverable(source)) return null;
+    const message = source.status === 'uncertain' ? '卡片发送结果未确认，未重复发送。请先查看已收到的消息，也可在知行网页继续。'
+      : '卡片未能送达，未重复发送。已有学习记录保留；可发送“菜单”选择入口，或在知行网页继续。';
+    return this.queue(`delivery-notice:${source.id}`, message, { purpose: 'delivery_notice', noticeFor: source.id });
   }
 
   confirm(item, messageId) {
@@ -454,7 +526,10 @@ export class FeishuChat {
       this.saveState({ activeDiscussion: { ...this.discussionChannel(), feedbackId, messageId,
         explicit: !!item.explicitDiscussion || previous?.feedbackId === feedbackId && !!previous.explicit } });
     }
-    if (!['practice', 'learning_card'].includes(item.purpose) || !this.recipientCurrent(item) || !this.practiceCurrent(item)) return;
+    const menuPractice = item.purpose === 'card_update' && item.menuPractice && card?.section === 'practice'
+      && card.messageId === messageId && card.version === item.cardVersion && card.confirmedVersion === item.cardVersion
+      && card.confirmedVersion >= card.requiredPracticeVersion;
+    if ((!['practice', 'learning_card'].includes(item.purpose) && !menuPractice) || !this.recipientCurrent(item) || !this.practiceCurrent(item)) return;
     if (this.state().activeDiscussion && !this.state().activeDiscussion.explicit) this.saveState({ activeDiscussion: null });
     const delivery = { outboxId: item.id, practiceId: item.practiceId, context: item.context, bindingEpoch: item.bindingEpoch, messageId, sentAt };
     this.store.put('feishu-chat-delivery', delivery, digest([this.identity(), messageId]));

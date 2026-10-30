@@ -12,6 +12,10 @@ const ALLOWED_ACTIONS = new Set([
   'rate_good',
   'rate_easy',
   'refresh',
+  'menu_today',
+  'menu_review',
+  'menu_advice',
+  'menu_status',
 ]);
 
 const ESCAPES = {
@@ -559,4 +563,31 @@ export function renderStatusCard({ title, message, token, actions = [] } = {}) {
   }
 
   return baseCard(plain(title, '学习状态', 100, 300), '学习卡片状态', elements);
+}
+
+export function renderMenuCard({ token, message } = {}) {
+  const safeToken = tokenText(token);
+  const safeMessage = markdown(
+    typeof message === 'string' ? message : '',
+    '选择接下来要做的事。',
+    300,
+    1200,
+  );
+
+  return baseCard('学习菜单', '练习、复习与学习记录', [
+    block([
+      textElement(`**${safeMessage}**`),
+    ], 'blue-50'),
+    block([
+      textElement('每次选择一个入口即可。', { secondary: true }),
+    ]),
+    actionRow([
+      callbackButton(safeToken, 'menu_today', '今日练习', { primary: true }),
+      callbackButton(safeToken, 'menu_review', '记忆闪卡'),
+    ]),
+    actionRow([
+      callbackButton(safeToken, 'menu_advice', '查看已有建议'),
+      callbackButton(safeToken, 'menu_status', '当前状态'),
+    ]),
+  ]);
 }

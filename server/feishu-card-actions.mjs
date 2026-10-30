@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { digest, truncate } from './validation.mjs';
 import { fail, publicError } from './errors.mjs';
-import { renderPracticeCard, renderAdviceCard, renderFlashcardCard, renderStatusCard } from './feishu-cards.mjs';
+import { renderPracticeCard, renderAdviceCard, renderFlashcardCard, renderStatusCard, renderMenuCard } from './feishu-cards.mjs';
 
 const ACTIONS = new Set(['submit_answer', 'view_advice', 'retry_advice', 'save_advice', 'dismiss_advice', 'discuss_advice', 'retry_discussion',
-  'flashcards', 'create_flashcard', 'reveal_card', 'rate_again', 'rate_hard', 'rate_good', 'rate_easy', 'refresh']);
+  'flashcards', 'create_flashcard', 'reveal_card', 'rate_again', 'rate_hard', 'rate_good', 'rate_easy', 'refresh', 'menu_today', 'menu_review', 'menu_advice', 'menu_status']);
+const MENU_ACTIONS = ['menu_today', 'menu_review', 'menu_advice', 'menu_status'];
 const RATINGS = { rate_again: 'again', rate_hard: 'hard', rate_good: 'good', rate_easy: 'easy' };
 const PREFIXES = { none: '独立：', hint: '提示：', partial: '部分代写：', full: 'AI代写：', unknown: '' };
 const PENDING = ['queued', 'running'];
@@ -23,6 +24,10 @@ export class FeishuCardActions {
   today() { return this.chat.automation.today(); }
 
   current(state) {
+    if (state?.section === 'menu' || state?.menuReview && state.practiceId === null) {
+      return !!(this.chat.discussionChannelCurrent({ ...state, cardsRequired: true })
+        && (!state.reviewEpoch || state.reviewEpoch === this.siyuan.epoch()));
+    }
     if (state?.discussion && state.section === 'advice' && this.discussion) return this.discussionCurrent(state);
     const binding = this.chat.binding(); const today = this.today();
     return !!(state && this.chat.config().enabled && this.chat.configured() && this.chat.config().cardsEnabled && binding
@@ -55,7 +60,7 @@ export class FeishuCardActions {
       const issued = this.issue(outbox.id, 1);
       const state = this.store.put('feishu-card', { ...fields, version: 1, nonceHash: issued.nonceHash,
         appIdentity: this.chat.identity(), bindingEpoch: binding.epoch, userId: binding.userId, chatId: binding.chatId,
-        messageId: null, dirty: false, actionJobId: null }, outbox.id);
+        messageId: null, dirty: false, actionJobId: null, requestedInboxId: outbox.requestedInboxId ?? null }, outbox.id);
       return this.store.put('feishu-chat-outbox', { ...outbox, card: this.render(state, issued.token), cardId: state.id, cardVersion: state.version }, outbox.id);
     });
   }
@@ -63,6 +68,32 @@ export class FeishuCardActions {
   decoratePractice(outbox, today) {
     return this.decorate(outbox, { view: 'practice', section: 'practice', phase: 'question', practiceId: today.practice.id,
       context: this.chat.context(today), attemptId: today.attempt?.id ?? null });
+  }
+
+  decorateMenu(outbox) {
+    return this.decorate(outbox, { view: 'menu', section: 'menu', phase: 'menu', practiceId: null, attemptId: null, context: null,
+      message: '选择一个入口开始；已有回答和成果会保留。' });
+  }
+
+  async menuAction(state, name) {
+    if (name === 'menu_today') {
+      const today = this.today(); this.chat.saveState({ activeDiscussion: null });
+      if (!today.practice) return this.update(state.id, { message: '今天还没有准备好的练习，可在知行网页查看。' });
+      return this.update(state.id, { view: 'practice', section: 'practice', phase: 'question', menuPractice: true,
+        practiceId: today.practice.id, context: this.chat.context(today), attemptId: today.attempt?.id ?? null, date: today.date,
+        requiredPracticeVersion: state.version + 1 });
+    }
+    if (name === 'menu_review') {
+      const today = this.today();
+      this.update(state.id, { view: 'status', section: 'flashcards', title: '正在打开记忆闪卡', message: '正在读取已有复习队列。', actions: [], menuReview: true,
+        practiceId: today.practice?.id ?? null, context: today.practice ? this.chat.context(today) : null, attemptId: today.attempt?.id ?? null });
+      return this.startReview(this.state(state.id));
+    }
+    if (name === 'menu_advice') {
+      const result = this.chat.openExistingAdvice(state.requestedInboxId ?? state.id);
+      return this.update(state.id, { message: result.message });
+    }
+    return this.update(state.id, { message: this.chat.menuStatus() });
   }
 
   decorateAdvice(outbox, inbox, advice) {
@@ -122,6 +153,10 @@ export class FeishuCardActions {
   assertAction(state, name) {
     if (state.actionJobId && PENDING.includes(this.store.get('job', state.actionJobId)?.status)) fail(409, 'JOB_OVERLAP', '这张卡片正在处理，请稍后刷新。');
     if (name === 'submit_answer' && (state.view !== 'practice' || this.today().attempt)) fail(409, 'INVALID_STATE', '这次回答已经保存，请查看建议或进入记忆闪卡。');
+    if (name === 'submit_answer' && state.menuPractice && !(state.confirmedVersion === state.version
+      && state.confirmedVersion >= state.requiredPracticeVersion)) fail(409, 'INVALID_STATE', '题目卡片尚未确认送达，请先查看已收到的内容。');
+    if (MENU_ACTIONS.includes(name) && state.section !== 'menu') fail(409, 'INVALID_STATE', '请发送“菜单”打开当前入口。');
+    if (state.section === 'menu' && ![...MENU_ACTIONS, 'resync', 'refresh'].includes(name)) fail(409, 'INVALID_STATE', '请选择菜单中的入口。');
     if (name === 'reveal_card' && (state.view !== 'flashcard' || state.revealed || state.monitorJobId)) fail(409, 'INVALID_STATE', '当前不能再次翻面，请刷新卡片。');
     if (RATINGS[name] && (state.view !== 'flashcard' || !state.revealed || state.monitorJobId)) fail(409, 'INVALID_STATE', '请先独立回忆并翻面，再选择记忆自评。');
     if (['save_advice', 'dismiss_advice'].includes(name) && (!state.feedbackId || state.view !== 'advice')) fail(409, 'INVALID_STATE', '请先查看这次回答的建议。');
@@ -156,7 +191,7 @@ export class FeishuCardActions {
           expectedVersion: state.discussionVersion, operationId, channel: this.chat.discussionChannel(true) });
         const ack = this.jobs.enqueue('feishu_card_action', { cardId: state.id, action: name, operationId,
           appIdentity: state.appIdentity, bindingEpoch: state.bindingEpoch, context: state.context, discussionVersion: state.discussionVersion, trigger: 'user' }, operationId, `feishu-card:${state.id}`);
-        this.save(state.id, { actionJobId: ack.jobId });
+        this.save(state.id, { actionJobId: ack.jobId, requestedInboxId: state.requestedInboxId ?? eventId });
         this.store.put('feishu-card-event', { cardId: state.id, action: name, jobId: ack.jobId,
           eventTokenHash: digest(String(eventToken)), formDigest, receivedAt: this.clock().toISOString() }, eventId);
         this.chat.saveState({ lastCardActionAt: this.clock().toISOString(), lastCardAppIdentity: state.appIdentity, lastCardBindingEpoch: state.bindingEpoch });
@@ -180,6 +215,7 @@ export class FeishuCardActions {
   }
 
   render(state, token) {
+    if (state.view === 'menu') return renderMenuCard({ token, message: state.message });
     const today = this.today();
     if (state.view === 'practice') return renderPracticeCard({ goal: today.practice.goal, prompt: today.practice.prompt,
       minutes: today.practice.estimatedMinutes, token, canSubmit: !today.attempt, answerStatus: today.attempt ? '回答已保存，可查看建议或进入记忆闪卡。' : '' });
@@ -244,12 +280,14 @@ export class FeishuCardActions {
 
   async startReview(state) {
     const created = await this.reviews.create({ projectId: null, limit: 10 });
+    if (!this.current(this.state(state.id))) fail(409, 'INVALID_STATE', '复习入口的绑定或材料已变化。');
     this.save(state.id, { section: 'flashcards', reviewSessionId: created.session.id, reviewEpoch: this.siyuan.epoch() });
     return this.nextReview(this.state(state.id));
   }
 
   async nextReview(state) {
     const next = await this.reviews.next(state.reviewSessionId);
+    if (!this.current(this.state(state.id))) fail(409, 'INVALID_STATE', '复习入口的绑定或材料已变化。');
     if (next.state === 'question') {
       const fields = { view: 'flashcard', phase: 'review_question', question: next.card.question, answer: null, revealed: false,
         presentationId: next.card.presentationId, reviewCardId: next.card.cardId, reviewStartedAt: this.clock().toISOString(),
@@ -261,9 +299,10 @@ export class FeishuCardActions {
     if (['rating_pending', 'uncertain'].includes(next.state)) return this.status(state.id, '评分待确认', '评分任务尚未完成，未重复发送；可以稍后刷新。', {
       phase: 'rating_pending', monitorJobId: next.jobId, monitorKind: 'grade', actions: [action('refresh', '刷新状态')] });
     const empty = next.state === 'empty';
-    return this.status(state.id, empty ? '暂无到期闪卡' : '闪卡暂不可用', empty ? '可以用本次学习重点制作一张记忆闪卡，接受保留不代表事实已核验。'
+    const canCreate = empty && !!this.today().highlights?.[0]?.sourceRefs?.length;
+    return this.status(state.id, empty ? '暂无到期闪卡' : '闪卡暂不可用', canCreate ? '可以用本次学习重点制作一张记忆闪卡，接受保留不代表事实已核验。' : empty ? '暂时没有到期闪卡，可以在知行网页管理已有闪卡。'
       : '请在网页检查当前知识与思源连接；已有记录保留。', { phase: empty ? 'no_due_cards' : 'review_blocked', monitorJobId: null,
-      actions: empty ? [action('create_flashcard', '用本次重点制作闪卡', true), action('refresh', '刷新状态')] : [action('refresh', '刷新状态')] });
+      actions: canCreate ? [action('create_flashcard', '用本次重点制作闪卡', true), action('refresh', '刷新状态')] : [action('refresh', '刷新状态')] });
   }
 
   reveal(state) {
@@ -305,7 +344,8 @@ export class FeishuCardActions {
     try {
       if (!this.current(state) || payload.appIdentity !== state.appIdentity || payload.bindingEpoch !== state.bindingEpoch || payload.context !== state.context) fail(409, 'INVALID_STATE', '卡片的绑定、题目或来源已变化。');
       const name = payload.action;
-      if (name === 'submit_answer') this.update(state.id, { view: 'practice', attemptId: this.today().attempt?.id ?? null, phase: 'answer_saved' });
+      if (MENU_ACTIONS.includes(name)) await this.menuAction(state, name);
+      else if (name === 'submit_answer') this.update(state.id, { view: 'practice', attemptId: this.today().attempt?.id ?? null, phase: 'answer_saved' });
       else if (name === 'view_advice' || name === 'retry_advice') this.showAdvice(state, name === 'retry_advice');
       else if (name === 'save_advice' || name === 'dismiss_advice') this.selectAdvice(state, name === 'save_advice' ? 'saved' : 'dismissed', payload.operationId, payload.discussionVersion);
       else if (name === 'discuss_advice' || name === 'retry_discussion') this.showDiscussion(state);
@@ -328,6 +368,7 @@ export class FeishuCardActions {
   }
 
   async refresh(state) {
+    if (state.section === 'menu') return this.update(state.id, { message: this.chat.menuStatus() });
     if (state.monitorJobId) return this.update(state.id, {});
     if (state.section === 'flashcards') return state.reviewSessionId ? this.nextReview(state) : this.startReview(state);
     if (state.section === 'advice') return this.showAdvice(state);
@@ -354,7 +395,9 @@ export class FeishuCardActions {
       const updated = this.save(state.id, { version, nonceHash: issued.nonceHash, dirty: false });
       this.chat.queue(`card-update:${state.id}:${version}`, '学习卡片已更新，请查看卡片中的当前状态。', {
         purpose: 'card_update', card: this.render(updated, issued.token), updateMessageId: state.messageId,
-        cardId: state.id, cardVersion: version, practiceId: state.practiceId, context: state.context });
+        cardId: state.id, cardVersion: version, practiceId: state.practiceId, context: state.context,
+        requestedInboxId: state.requestedInboxId, menuPractice: !!state.menuPractice && state.section === 'practice' && state.view === 'practice',
+        date: state.date ?? null, attemptId: state.attemptId ?? null });
     });
   }
 

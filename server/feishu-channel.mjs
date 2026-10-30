@@ -3,14 +3,19 @@ import { ApiError } from './errors.mjs';
 const QUIET_LOGGER = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
 
 export function channelError(error) {
-  const code = error?.response?.data?.code ?? error?.code;
+  const responseCode = error?.response?.data?.code;
+  const code = responseCode ?? error?.code;
+  const rejected = Number.isSafeInteger(responseCode) && responseCode > 0;
+  const knownFailure = result => {
+    result.uncertain = false; result.providerCode = code; return result;
+  };
   if ([99991663, 99991664, 99991668, 99991672, 99991679].includes(code)) {
-    return new ApiError(403, 'SCOPE_FORBIDDEN', '请在飞书应用中开通私聊收发权限并发布应用。');
+    return knownFailure(new ApiError(403, 'SCOPE_FORBIDDEN', '请在飞书应用中开通私聊收发权限并发布应用。'));
   }
   if ([99991400, 99991403].includes(code)) {
-    const result = new ApiError(429, 'RATE_LIMITED', '飞书请求频率受限，稍后再试。', true);
-    result.uncertain = false; return result;
+    return knownFailure(new ApiError(429, 'RATE_LIMITED', '飞书请求频率受限，稍后再试。', true));
   }
+  if (rejected) return knownFailure(new ApiError(502, 'FEISHU_REQUEST_REJECTED', '飞书未接受本次消息，已有学习记录保留。'));
   return new ApiError(503, 'CONNECTION_UNAVAILABLE', '飞书暂未连接，请检查网络及应用的机器人、长连接和发布状态。', true);
 }
 
@@ -34,10 +39,7 @@ export async function createFeishuTransport({ appId, appSecret, apiBase, onMessa
           : await channel.rawClient.im.v1.message.create({ params: { receive_id_type: 'chat_id' },
             data: { receive_id: chatId, msg_type: card ? 'interactive' : 'text', content: JSON.stringify(card ?? { text }), uuid } });
       } catch (error) { throw channelError(error); }
-      if (result.code !== 0) {
-        const error = channelError({ code: result.code });
-        error.uncertain = false; throw error;
-      }
+      if (result?.code !== 0) throw channelError({ response: { data: result } });
       const messageId = updateMessageId ?? result.data?.message_id;
       if (!messageId) throw channelError(null);
       return { messageId };

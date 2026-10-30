@@ -349,7 +349,7 @@ test('completed practice stays excluded from ordinary reminders and cards-disabl
   assert.equal(f.app.store.all('feishu-chat-outbox').length, before); assert.equal(f.modelCalls(), 0);
 });
 
-test('repeated learning commands reuse one interactive card without duplicate replies or model calls', async t => {
+test('repeated learning commands acknowledge status while reusing one interactive card without model calls', async t => {
   const f = await fixture(t);
   f.app.learning.attempt(f.practice.id, { output: 'Saved already.', assistanceLevel: 'none', evidenceRefs: [] });
   f.chat.receive(f.message('今日练习')); await f.chat.drain(f.send);
@@ -357,7 +357,9 @@ test('repeated learning commands reuse one interactive card without duplicate re
   const before = f.sent.length;
   f.chat.receive(f.message('开始学习')); f.chat.receive(f.message('今日练习')); await f.chat.drain(f.send);
   assert.equal(f.app.store.all('feishu-chat-outbox').filter(row => row.purpose === 'learning_card').length, 1);
-  assert.equal(f.sent.length, before); assert.equal(f.chat.sendToday({ interactive: true }).alreadySent, true);
+  const notices = f.sent.slice(before); assert.equal(notices.length, 2);
+  assert.ok(notices.every(item => !item.card && typeof item.text === 'string' && item.text.length > 0 && item.text.length <= 500));
+  assert.equal(f.chat.sendToday({ interactive: true }).alreadySent, true);
   assert.equal(f.app.store.all('job').filter(job => job.kind === 'feishu_card_action').length, 0);
   assert.equal(f.modelCalls(), 0);
 });

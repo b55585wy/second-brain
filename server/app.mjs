@@ -305,6 +305,10 @@ export function createApp(options = {}) {
     const request = input(body, ['feedbackId']);
     const result = feishuChat.openDiscussion(request.feedbackId); wakeChat(); return result;
   });
+  route('POST', '/feishu-chat/open-menu', ({ body }) => {
+    input(body, []);
+    const result = feishuChat.openMenu(body.operationId); wakeChat(); return result;
+  });
   route('POST', '/feedback/:id/discussion', ({ params, body }) => discussion.submit(params.id,
     { ...input(body, ['message', 'expectedVersion']), operationId: body.operationId }));
   route('POST', '/feedback/:id/discussion/retry', ({ params, body }) => discussion.retry(params.id,

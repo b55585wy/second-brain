@@ -114,12 +114,18 @@ test('practice card has one root form with unique names, required capped input, 
 
   const input = elements(form, 'input')[0];
   assert.equal(input.name, 'answer_text');
+  assert.deepEqual(input.label, { tag: 'plain_text', content: '你的回答' });
   assert.equal(input.input_type, 'multiline_text');
   assert.equal(input.rows, 4);
   assert.equal(input.max_length, 1000);
   assert.equal(input.required, true);
 
   const select = elements(form, 'select_static')[0];
+  assert.equal(Object.prototype.hasOwnProperty.call(select, 'label'), false);
+  assert.deepEqual(form.elements[form.elements.indexOf(select) - 1], {
+    tag: 'markdown',
+    content: '完成方式（可选）',
+  });
   assert.equal(select.name, 'assistance');
   assert.equal(select.initial_option, 'unknown');
   assert.deepEqual(select.options.map((option) => option.value), ['unknown', 'none', 'hint', 'partial', 'full']);

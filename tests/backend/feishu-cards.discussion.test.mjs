@@ -55,6 +55,18 @@ function taggedCount(card) {
   return count;
 }
 
+function expectedPracticeWithSelectLabelMoved(input) {
+  const card = legacyPracticeCard(input);
+  const form = card.body.elements.find((element) => element.tag === 'form');
+  const selectIndex = form.elements.findIndex((element) => element.tag === 'select_static');
+  delete form.elements[selectIndex].label;
+  form.elements.splice(selectIndex, 0, {
+    tag: 'markdown',
+    content: '完成方式（可选）',
+  });
+  return card;
+}
+
 const baseAdvice = {
   summary: '当前候选摘要',
   strengths: ['当前亮点'],
@@ -89,7 +101,7 @@ test('absent and undefined discussion are deeply identical to legacy for several
 
 test('all other renderers remain deeply identical to the immutable reference', () => {
   const cases = [
-    [renderPracticeCard, legacyPracticeCard, { goal: '代数', prompt: '问题', minutes: 10, token: 'p' }],
+    [renderPracticeCard, expectedPracticeWithSelectLabelMoved, { goal: '代数', prompt: '问题', minutes: 10, token: 'p' }],
     [renderPracticeCard, legacyPracticeCard, { prompt: '问题', canSubmit: false, answerStatus: '已提交', token: 'p' }],
     [renderFlashcardCard, legacyFlashcardCard, { question: '问题', answer: '答案', token: 'f' }],
     [renderFlashcardCard, legacyFlashcardCard, { question: '问题', answer: '答案', revealed: true, token: 'f' }],

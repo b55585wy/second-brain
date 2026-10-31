@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { digest, truncate } from './validation.mjs';
+import { digest, integer, onlyFields, operationId as checkOperation, text, truncate } from './validation.mjs';
 import { fail, publicError } from './errors.mjs';
 import { renderPracticeCard, renderAdviceCard, renderFlashcardCard, renderStatusCard, renderMenuCard } from './feishu-cards.mjs';
 
@@ -45,6 +45,53 @@ export class FeishuCardActions {
       const feedback = this.store.require('feedback', state.feedbackId); const material = this.advice.material(feedback.attemptId);
       return feedback.attemptId === state.attemptId && material.practice.id === state.practiceId;
     } catch { return false; }
+  }
+
+  knownFailedMenuPatch(state, expectedVersion) {
+    if (!this.current(state) || !state.menuPractice || state.view !== 'practice' || state.section !== 'practice'
+      || !Number.isInteger(state.confirmedVersion) || state.confirmedVersion < 1 || state.confirmedVersion >= state.version) {
+      fail(409, 'INVALID_STATE', '当前卡片不是可恢复的已确认菜单题目。');
+    }
+    if (state.version !== expectedVersion) fail(409, 'CARD_VERSION_CHANGED', '卡片版本已变化，请读取当前状态后再恢复。');
+    const menu = this.store.get('feishu-chat-outbox', state.id);
+    if (menu?.purpose !== 'menu' || menu.status !== 'sent' || menu.cardId !== state.id || menu.messageId !== state.messageId
+      || !this.chat.recipientCurrent(menu)) fail(409, 'INVALID_STATE', '缺少当前私聊已确认的原菜单。');
+    const updates = this.store.all('feishu-chat-outbox').filter(item => item.purpose === 'card_update' && item.cardId === state.id);
+    const latest = updates.sort((a, b) => b.cardVersion - a.cardVersion)[0];
+    if (latest?.cardVersion !== state.version || latest.status !== 'failed' || !latest.menuPractice || latest.updateMessageId !== state.messageId
+      || !this.chat.recipientCurrent(latest) || !this.chat.learningCardCurrent(latest)
+      || updates.some(item => ['pending', 'sending', 'uncertain'].includes(item.status))) {
+      fail(409, 'INVALID_STATE', '只能恢复当前明确失败的题目更新；未确认或发送中的操作保持关闭。');
+    }
+    const intent = this.store.all('feishu-card-event').some(event => {
+      if (event.cardId !== state.id || event.action !== 'menu_today') return false;
+      const job = this.store.get('job', event.jobId);
+      return job?.kind === 'feishu_card_action' && job.status === 'succeeded' && job.payload.action === 'menu_today'
+        && job.payload.cardId === state.id && job.payload.appIdentity === state.appIdentity && job.payload.bindingEpoch === state.bindingEpoch;
+    });
+    if (!intent) fail(409, 'INVALID_STATE', '缺少当前绑定下真实菜单点击的确认记录。');
+    return latest;
+  }
+
+  refreshKnownFailedMenu(cardId, options) {
+    onlyFields(options, ['expectedVersion', 'operationId']); integer(options.expectedVersion, 'expectedVersion', 1, Number.MAX_SAFE_INTEGER); checkOperation(options.operationId);
+    const id = text(cardId, 'cardId', 128); const jobOperation = `menu_refresh_${digest([id, options.operationId]).slice(0, 48)}`;
+    return this.store.transaction(() => {
+      const state = this.store.require('feishu-card', id);
+      if (!this.current(state)) fail(409, 'INVALID_STATE', '卡片的绑定或材料已变化，未恢复旧操作。');
+      const prior = this.store.all('job').find(job => job.operationId === jobOperation);
+      if (prior) {
+        if (prior.payload.recoveryExpectedVersion !== options.expectedVersion) fail(409, 'CARD_VERSION_CHANGED', '同一恢复操作不能改用其他版本。');
+        return { jobId: prior.id, operationId: prior.operationId, cardId: id, expectedVersion: options.expectedVersion, targetVersion: options.expectedVersion + 1 };
+      }
+      const failed = this.knownFailedMenuPatch(state, options.expectedVersion);
+      this.assertAction(state, 'resync');
+      const ack = this.jobs.enqueue('feishu_card_action', { cardId: id, action: 'resync', appIdentity: state.appIdentity,
+        bindingEpoch: state.bindingEpoch, context: state.context, recoveryFromOutboxId: failed.id, recoveryExpectedVersion: options.expectedVersion, trigger: 'user' },
+      jobOperation, `feishu-card:${id}`);
+      this.save(id, { actionJobId: ack.jobId, requiredPracticeVersion: state.version + 1, requestedInboxId: jobOperation });
+      return { ...ack, cardId: id, expectedVersion: options.expectedVersion, targetVersion: options.expectedVersion + 1 };
+    });
   }
 
   issue(id, version) {
@@ -191,7 +238,7 @@ export class FeishuCardActions {
           expectedVersion: state.discussionVersion, operationId, channel: this.chat.discussionChannel(true) });
         const ack = this.jobs.enqueue('feishu_card_action', { cardId: state.id, action: name, operationId,
           appIdentity: state.appIdentity, bindingEpoch: state.bindingEpoch, context: state.context, discussionVersion: state.discussionVersion, trigger: 'user' }, operationId, `feishu-card:${state.id}`);
-        this.save(state.id, { actionJobId: ack.jobId, requestedInboxId: state.requestedInboxId ?? eventId });
+        this.save(state.id, { actionJobId: ack.jobId, requestedInboxId: name === 'menu_today' ? operationId : state.requestedInboxId ?? eventId });
         this.store.put('feishu-card-event', { cardId: state.id, action: name, jobId: ack.jobId,
           eventTokenHash: digest(String(eventToken)), formDigest, receivedAt: this.clock().toISOString() }, eventId);
         this.chat.saveState({ lastCardActionAt: this.clock().toISOString(), lastCardAppIdentity: state.appIdentity, lastCardBindingEpoch: state.bindingEpoch });
@@ -343,6 +390,10 @@ export class FeishuCardActions {
     if (!state || state.actionJobId !== job.id) return { superseded: true };
     try {
       if (!this.current(state) || payload.appIdentity !== state.appIdentity || payload.bindingEpoch !== state.bindingEpoch || payload.context !== state.context) fail(409, 'INVALID_STATE', '卡片的绑定、题目或来源已变化。');
+      if (payload.recoveryFromOutboxId) {
+        const failed = this.knownFailedMenuPatch(state, payload.recoveryExpectedVersion);
+        if (failed.id !== payload.recoveryFromOutboxId) fail(409, 'INVALID_STATE', '明确失败的更新记录已变化，未恢复旧操作。');
+      }
       const name = payload.action;
       if (MENU_ACTIONS.includes(name)) await this.menuAction(state, name);
       else if (name === 'submit_answer') this.update(state.id, { view: 'practice', attemptId: this.today().attempt?.id ?? null, phase: 'answer_saved' });

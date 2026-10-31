@@ -2,7 +2,7 @@
 
 0.3.0–0.3.3 的已验收基线使用飞书官方 Node SDK 1.76.0 的 Channel 接收私聊，以原生消息 API 的稳定 UUID 发送文本；二维码由 qrcode 1.5.4 在本机生成，已打通今日练习与回答。
 
-本机已部署 **0.6.0**，完整回归通过。发送“菜单”打开四入口卡片；真实菜单投递一次已获平台接受，新按钮的真实点击仍待用户使用验证，见 [菜单验收](FEISHU-MENU-VERIFICATION-20261031.md)。原有机器人、绑定、回答和讨论继续保留；0.5已有一轮真实讨论，教学调整与明确保存的边界见 [讨论验收](ADVICE-DISCUSSION-VERIFICATION-20261031.md)。云端发布以 GitHub Release 为准；进度教练、自适应安排及自由聊天继续按 [长期方向](CHAT-CHANNEL-DIRECTION.md)迭代。
+本机已部署 **0.6.1**。发送“菜单”打开四入口卡片；真实“今日练习”点击、同一消息上的题目更新和确认后的作答关联已验证，见 [题目修复验收](FEISHU-PRACTICE-CARD-VERIFICATION-20261031.md)及[原菜单验收](FEISHU-MENU-VERIFICATION-20261031.md)。原有机器人、绑定、回答和讨论继续保留；0.5已有一轮真实讨论，教学调整与明确保存的边界见 [讨论验收](ADVICE-DISCUSSION-VERIFICATION-20261031.md)。云端发布以 GitHub Release 为准；进度教练、自适应安排及自由聊天继续按 [长期方向](CHAT-CHANNEL-DIRECTION.md)迭代。
 
 ## 第一次接入
 

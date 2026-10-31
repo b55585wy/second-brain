@@ -309,6 +309,10 @@ export function createApp(options = {}) {
     input(body, []);
     const result = feishuChat.openMenu(body.operationId); wakeChat(); return result;
   });
+  route('POST', '/feishu-chat/cards/:id/refresh-known-failed', ({ params, body }) => {
+    const request = input(body, ['expectedVersion']);
+    const result = feishuCards.refreshKnownFailedMenu(params.id, { ...request, operationId: body.operationId }); wakeChat(); return result;
+  }, { status: 202 });
   route('POST', '/feedback/:id/discussion', ({ params, body }) => discussion.submit(params.id,
     { ...input(body, ['message', 'expectedVersion']), operationId: body.operationId }));
   route('POST', '/feedback/:id/discussion/retry', ({ params, body }) => discussion.retry(params.id,

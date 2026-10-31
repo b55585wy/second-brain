@@ -211,10 +211,10 @@ export function renderPracticeCard({
           max_length: 1000,
           width: 'fill',
         },
+        textElement('完成方式（可选）'),
         {
           tag: 'select_static',
           name: 'assistance',
-          label: { tag: 'plain_text', content: '完成方式（可选）' },
           initial_option: 'unknown',
           options: [
             ['unknown', '未说明'],
